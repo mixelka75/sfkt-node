@@ -1,0 +1,53 @@
+FROM debian:12-slim
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    unzip \
+    ca-certificates \
+    python3 \
+    python3-pip \
+    supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Xray
+ARG XRAY_VERSION=1.8.24
+RUN curl -L https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-linux-64.zip -o /tmp/xray.zip \
+    && unzip /tmp/xray.zip -d /usr/local/bin/ \
+    && rm /tmp/xray.zip \
+    && chmod +x /usr/local/bin/xray
+
+# Create directories
+RUN mkdir -p /etc/xray \
+    /var/log/xray \
+    /usr/local/share/xray
+
+# Copy config template
+COPY config/xray_template.json /etc/xray/config.json
+
+# Copy scripts
+COPY scripts/ /usr/local/bin/
+RUN chmod +x /usr/local/bin/*.sh
+
+# Install Python dependencies for node agent
+RUN pip3 install --no-cache-dir \
+    requests \
+    aiohttp \
+    psutil
+
+# Copy node agent
+COPY node_agent.py /usr/local/bin/node_agent.py
+RUN chmod +x /usr/local/bin/node_agent.py
+
+# Copy supervisor config
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Expose ports
+EXPOSE 443
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:10085/stats || exit 1
+
+# Start supervisor
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

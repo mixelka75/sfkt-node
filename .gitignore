@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.venv
+venv/
+ENV/
+env/
+
+# Environment variables
+.env
+.env.local
+
+# Logs
+*.log
+logs/
+xray_config/
+/var/log/xray/
+
+# Docker
+docker-compose.override.yml
+
+# Certificates and keys
+*.pem
+*.key
+*.crt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Config files with secrets
+config.json
