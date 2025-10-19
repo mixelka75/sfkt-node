@@ -10,8 +10,8 @@ RUN apt-get update && apt-get install -y \
     supervisor \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Xray
-ARG XRAY_VERSION=1.8.24
+# Install Xray-core (latest version with REALITY support)
+ARG XRAY_VERSION=25.9.11
 RUN curl -L https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-linux-64.zip -o /tmp/xray.zip \
     && unzip /tmp/xray.zip -d /usr/local/bin/ \
     && rm /tmp/xray.zip \
