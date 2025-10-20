@@ -20,8 +20,8 @@ generate_keys() {
 echo "Generating REALITY keys..."
 KEYS=$(generate_keys)
 
-PRIVATE_KEY=$(echo "$KEYS" | grep "Private key:" | awk '{print $3}')
-PUBLIC_KEY=$(echo "$KEYS" | grep "Public key:" | awk '{print $3}')
+PRIVATE_KEY=$(echo "$KEYS" | grep "PrivateKey:" | awk '{print $2}')
+PUBLIC_KEY=$(echo "$KEYS" | grep "Password:" | awk '{print $2}')
 
 # Generate short ID (random 8 characters)
 SHORT_ID=$(openssl rand -hex 8)
