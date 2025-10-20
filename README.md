@@ -11,68 +11,123 @@ VPN node service с Xray-core для SFKT VPN проекта.
 - Синхронизирует статистику трафика в реальном времени
 - Отправляет health checks для мониторинга
 
-## Быстрый старт
+## Требования
 
-### 1. Генерация ключей REALITY
+- Docker и Docker Compose установлены на сервере
+- Открыт порт 443 (для VPN трафика)
+- Доступ к главному серверу SFKT
+- Валидный домен с А-записью, указывающей на IP ноды (опционально, но рекомендуется)
+
+## Установка
+
+### 1. Клонирование репозитория
 
 ```bash
+# Создайте директорию для ноды
+mkdir -p /opt/sfkt-node
+cd /opt/sfkt-node
+
+# Скопируйте файлы node-service из основного репозитория
+# (предполагается, что вы клонировали основной репозиторий SFKT)
+```
+
+### 2. Генерация ключей REALITY
+
+```bash
+# Сделайте скрипт исполняемым
+chmod +x scripts/generate_reality_keys.sh
+
+# Запустите генерацию ключей
+# Скрипт автоматически использует Docker для запуска Xray
 ./scripts/generate_reality_keys.sh
 ```
 
-Сохраните выведенные ключи:
-- **Private Key** - для конфигурации Xray
-- **Public Key** - для базы данных главного сервера и клиентов
-- **Short ID** - для конфигурации
+Скрипт выведет три значения:
+- **Private Key** - приватный ключ для конфигурации Xray на ноде
+- **Public Key** - публичный ключ для базы данных главного сервера и клиентов
+- **Short ID** - короткий идентификатор для REALITY протокола
 
-### 2. Настройка
+**ВАЖНО**: Сохраните эти значения в безопасном месте! Они понадобятся на следующих шагах.
+
+### 3. Настройка Docker Compose
 
 ```bash
+# Создайте docker-compose.yml из примера
 cp docker-compose.example.yml docker-compose.yml
+
+# Отредактируйте конфигурацию
 nano docker-compose.yml
 ```
 
-Заполните все переменные окружения:
+Заполните все переменные окружения в `docker-compose.yml`:
 
 ```yaml
 environment:
-  # Node Info
-  NODE_NAME=Moscow-1
-  NODE_HOSTNAME=moscow1.yourdomain.com
-  NODE_IP=1.2.3.4
-  NODE_PORT=443
+  # Информация о ноде
+  NODE_NAME: "Moscow-1"                    # Название ноды (отображается в админке)
+  NODE_HOSTNAME: "moscow1.yourdomain.com"  # Домен ноды (или IP)
+  NODE_IP: "1.2.3.4"                       # Публичный IP сервера
+  NODE_PORT: "443"                         # Порт для VPN (обычно 443)
 
-  # Location
-  NODE_COUNTRY=Russia
-  NODE_COUNTRY_CODE=RU
-  NODE_CITY=Moscow
+  # Геолокация
+  NODE_COUNTRY: "Russia"
+  NODE_COUNTRY_CODE: "RU"
+  NODE_CITY: "Moscow"
 
-  # REALITY Keys
-  REALITY_PRIVATE_KEY=<your-private-key>
-  REALITY_PUBLIC_KEY=<your-public-key>
-  REALITY_SHORT_ID=<your-short-id>
+  # REALITY ключи (из шага 2)
+  REALITY_PRIVATE_KEY: "your-private-key-from-step-2"
+  REALITY_PUBLIC_KEY: "your-public-key-from-step-2"
+  REALITY_SHORT_ID: "your-short-id-from-step-2"
 
-  # Main Server
-  MAIN_SERVER_URL=https://api.yourdomain.com
-  NODE_API_KEY=<same-as-NODE_API_SECRET-in-main-server>
+  # SNI для маскировки (оставьте по умолчанию или измените)
+  NODE_SNI: "vk.com"
+
+  # Подключение к главному серверу
+  MAIN_SERVER_URL: "https://sfkt.mxl.wtf"  # URL главного сервера
+  NODE_API_KEY: "same-as-NODE_API_SECRET-on-main-server"  # API ключ из .env главного сервера
 ```
 
-### 3. Запуск
+**ВАЖНО**: `NODE_API_KEY` на ноде должен совпадать с `NODE_API_SECRET` в `.env` файле главного сервера!
+
+### 4. Создание Docker сети
+
+Нода использует сеть `sfkt_network` для изоляции:
 
 ```bash
-docker-compose up -d
+docker network create sfkt_network
 ```
 
-### 4. Проверка
+### 5. Запуск ноды
 
 ```bash
-# Логи
-docker-compose logs -f
+# Запустите контейнер в фоновом режиме
+docker compose up -d --build
 
-# Статус
-docker-compose ps
+# Дождитесь загрузки (может занять 1-2 минуты)
+sleep 30
 ```
 
-Нода автоматически зарегистрируется на главном сервере.
+### 6. Проверка работоспособности
+
+```bash
+# Проверьте статус контейнера
+docker compose ps
+
+# Должно быть:
+# NAME                   STATUS
+# sfkt_xray_node        Up (healthy)
+
+# Просмотрите логи
+docker compose logs -f
+
+# В логах должны быть:
+# - "Xray started successfully"
+# - "Node registered successfully" или "Node updated successfully"
+# - "Traffic synced successfully" (каждые 30 секунд)
+# - "Health check sent successfully" (каждые 60 секунд)
+```
+
+Если вы видите сообщение "Node registered successfully", нода успешно подключилась к главному серверу!
 
 ## Компоненты
 
@@ -141,17 +196,68 @@ docker-compose up -d --build
 
 ### Нода не регистрируется
 
-Проверьте:
-- Доступность главного сервера: `curl $MAIN_SERVER_URL/health`
-- Правильность NODE_API_KEY
-- Логи агента: `docker-compose logs node_agent`
+Если в логах ошибка "Failed to register node" или "401 Unauthorized":
+
+```bash
+# 1. Проверьте доступность главного сервера
+curl https://sfkt.mxl.wtf/api/health
+
+# Должен вернуть: {"status":"ok"}
+
+# 2. Проверьте правильность NODE_API_KEY
+# Он должен совпадать с NODE_API_SECRET на главном сервере
+docker compose exec xray-node env | grep NODE_API_KEY
+
+# 3. Посмотрите детальные логи агента
+docker compose logs -f
+```
 
 ### Xray не запускается
 
-Проверьте:
-- Валидность конфигурации
-- Наличие всех REALITY ключей
-- Логи: `docker-compose logs xray`
+Если контейнер постоянно перезапускается:
+
+```bash
+# 1. Проверьте логи
+docker compose logs xray-node
+
+# 2. Убедитесь, что все REALITY ключи заполнены
+docker compose config | grep REALITY
+
+# 3. Проверьте конфигурацию Xray
+docker compose exec xray-node cat /etc/xray/config.json
+```
+
+### Ошибка "network sfkt_network not found"
+
+```bash
+# Создайте сеть вручную
+docker network create sfkt_network
+
+# Перезапустите контейнер
+docker compose up -d
+```
+
+### Ошибка генерации ключей "Permission denied"
+
+```bash
+# Дайте права на выполнение скрипта
+chmod +x scripts/generate_reality_keys.sh
+
+# Запустите снова
+./scripts/generate_reality_keys.sh
+```
+
+### Порт 443 уже занят
+
+Если другой сервис (nginx, apache) использует порт 443:
+
+1. Остановите конфликтующий сервис
+2. Или измените порт ноды в docker-compose.yml:
+   ```yaml
+   ports:
+     - "8443:443"  # Используйте другой внешний порт
+   ```
+   И обновите `NODE_PORT: "8443"` в переменных окружения
 
 ## Связанные репозитории
 
