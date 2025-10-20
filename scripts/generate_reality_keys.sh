@@ -1,15 +1,24 @@
 #!/bin/bash
 # Generate REALITY keys for Xray
 
-# Check if xray is installed
-if ! command -v xray &> /dev/null; then
-    echo "Error: xray is not installed"
-    exit 1
-fi
+# Function to generate keys using xray
+generate_keys() {
+    if command -v xray &> /dev/null; then
+        # xray is installed locally
+        xray x25519
+    elif command -v docker &> /dev/null; then
+        # Use Docker to run xray
+        docker run --rm teddysun/xray:latest xray x25519
+    else
+        echo "Error: Neither xray nor docker is installed"
+        echo "Please install docker or xray to generate REALITY keys"
+        exit 1
+    fi
+}
 
 # Generate keys
 echo "Generating REALITY keys..."
-KEYS=$(xray x25519)
+KEYS=$(generate_keys)
 
 PRIVATE_KEY=$(echo "$KEYS" | grep "Private key:" | awk '{print $3}')
 PUBLIC_KEY=$(echo "$KEYS" | grep "Public key:" | awk '{print $3}')
