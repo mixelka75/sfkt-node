@@ -30,7 +30,8 @@ COPY scripts/ /usr/local/bin/
 RUN chmod +x /usr/local/bin/*.sh
 
 # Install Python dependencies for node agent
-RUN pip3 install --no-cache-dir \
+# Using --break-system-packages is safe in Docker containers (isolated environment)
+RUN pip3 install --no-cache-dir --break-system-packages \
     requests \
     aiohttp \
     psutil
