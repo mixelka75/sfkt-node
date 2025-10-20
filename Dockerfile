@@ -27,7 +27,7 @@ COPY config/xray_template.json /etc/xray/config.json
 
 # Copy scripts
 COPY scripts/ /usr/local/bin/
-RUN chmod +x /usr/local/bin/*.sh
+RUN chmod +x /usr/local/bin/*.sh /usr/local/bin/entrypoint.sh
 
 # Install Python dependencies for node agent
 # Using --break-system-packages is safe in Docker containers (isolated environment)
@@ -50,5 +50,5 @@ EXPOSE 443
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:10085/stats || exit 1
 
-# Start supervisor
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+# Use entrypoint script
+CMD ["/usr/local/bin/entrypoint.sh"]
