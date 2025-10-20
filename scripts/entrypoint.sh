@@ -21,6 +21,12 @@ echo "Hostname: $NODE_HOSTNAME"
 echo "Location: $NODE_COUNTRY, $NODE_CITY"
 echo "=========================================="
 
+# Check if config exists, if not copy from template
+if [ ! -f /etc/xray/config.json ]; then
+    echo "Config not found, copying from template..."
+    cp /etc/xray/config.template.json /etc/xray/config.json
+fi
+
 # Replace placeholders in Xray config
 echo "Configuring Xray..."
 sed -i "s/PRIVATE_KEY_PLACEHOLDER/$REALITY_PRIVATE_KEY/g" /etc/xray/config.json

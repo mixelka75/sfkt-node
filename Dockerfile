@@ -22,7 +22,8 @@ RUN mkdir -p /etc/xray \
     /var/log/xray \
     /usr/local/share/xray
 
-# Copy config template
+# Copy config template (both to /etc/xray and as template)
+COPY config/xray_template.json /etc/xray/config.template.json
 COPY config/xray_template.json /etc/xray/config.json
 
 # Copy scripts
