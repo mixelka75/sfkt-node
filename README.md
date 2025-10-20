@@ -49,45 +49,50 @@ chmod +x scripts/generate_reality_keys.sh
 
 **ВАЖНО**: Сохраните эти значения в безопасном месте! Они понадобятся на следующих шагах.
 
-### 3. Настройка Docker Compose
+### 3. Настройка переменных окружения
 
 ```bash
-# Создайте docker-compose.yml из примера
-cp docker-compose.example.yml docker-compose.yml
+# Создайте .env файл из примера
+cp .env.example .env
 
-# Отредактируйте конфигурацию
-nano docker-compose.yml
+# Отредактируйте .env файл
+nano .env
 ```
 
-Заполните все переменные окружения в `docker-compose.yml`:
+Заполните все переменные в `.env` файле:
 
-```yaml
-environment:
-  # Информация о ноде
-  NODE_NAME: "Moscow-1"                    # Название ноды (отображается в админке)
-  NODE_HOSTNAME: "moscow1.yourdomain.com"  # Домен ноды (или IP)
-  NODE_IP: "1.2.3.4"                       # Публичный IP сервера
-  NODE_PORT: "443"                         # Порт для VPN (обычно 443)
+```bash
+# Информация о ноде
+NODE_NAME=Moscow-1
+NODE_HOSTNAME=moscow1.yourdomain.com  # или IP адрес
+NODE_IP=1.2.3.4
+NODE_PORT=443
 
-  # Геолокация
-  NODE_COUNTRY: "Russia"
-  NODE_COUNTRY_CODE: "RU"
-  NODE_CITY: "Moscow"
+# Геолокация
+NODE_COUNTRY=Russia
+NODE_COUNTRY_CODE=RU
+NODE_CITY=Moscow
 
-  # REALITY ключи (из шага 2)
-  REALITY_PRIVATE_KEY: "your-private-key-from-step-2"
-  REALITY_PUBLIC_KEY: "your-public-key-from-step-2"
-  REALITY_SHORT_ID: "your-short-id-from-step-2"
+# REALITY ключи (из шага 2)
+REALITY_PRIVATE_KEY=your-private-key-from-step-2
+REALITY_PUBLIC_KEY=your-public-key-from-step-2
+REALITY_SHORT_ID=your-short-id-from-step-2
 
-  # SNI для маскировки (оставьте по умолчанию или измените)
-  NODE_SNI: "vk.com"
+# SNI для маскировки
+NODE_SNI=vk.com
 
-  # Подключение к главному серверу
-  MAIN_SERVER_URL: "https://sfkt.mxl.wtf"  # URL главного сервера
-  NODE_API_KEY: "same-as-NODE_API_SECRET-on-main-server"  # API ключ из .env главного сервера
+# Подключение к главному серверу
+MAIN_SERVER_URL=https://sfkt.mxl.wtf
+NODE_API_KEY=same-as-NODE_API_SECRET-on-main-server
 ```
 
 **ВАЖНО**: `NODE_API_KEY` на ноде должен совпадать с `NODE_API_SECRET` в `.env` файле главного сервера!
+
+Также создайте docker-compose.yml (если его нет):
+
+```bash
+cp docker-compose.example.yml docker-compose.yml
+```
 
 ### 4. Создание Docker сети
 
