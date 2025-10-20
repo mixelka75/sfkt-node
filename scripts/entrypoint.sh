@@ -40,7 +40,7 @@ fi
 
 # Validate Xray config
 echo "Validating Xray configuration..."
-if ! /usr/local/bin/xray test -config /etc/xray/config.json; then
+if ! /usr/local/bin/xray -test -config /etc/xray/config.json; then
     echo "ERROR: Xray configuration validation failed!"
     echo "Config contents:"
     cat /etc/xray/config.json
