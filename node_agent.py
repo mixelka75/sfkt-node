@@ -473,7 +473,8 @@ class NodeAgent:
             added_count = 0
             for uuid in users_to_add:
                 user_data = server_user_map[uuid]
-                email = user_data.get('email', f"user_{uuid[:8]}")
+                # Use UUID as email for traffic tracking
+                email = uuid
 
                 if await self.xray_config.add_user(
                     inbound_tag=self.inbound_tag,
