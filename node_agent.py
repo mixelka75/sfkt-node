@@ -6,9 +6,9 @@ import asyncio
 import aiohttp
 import json
 import os
+import subprocess
 import psutil
 import logging
-import signal
 from datetime import datetime
 from typing import Dict, List, Optional, Set
 
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class XrayConfigManager:
     """Manager for Xray configuration file"""
 
-    def __init__(self, config_path: str = "/etc/xray/config.json"):
+    def __init__(self, config_path: str = "/usr/local/etc/xray/config.json"):
         self.config_path = config_path
 
     async def read_config(self) -> dict:
@@ -124,25 +124,24 @@ class XrayConfigManager:
         return False
 
     async def reload_xray(self) -> bool:
-        """Reload Xray configuration by sending SIGHUP to Xray process"""
+        """Reload Xray configuration via systemctl"""
         try:
-            # Find Xray process
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    if proc.info['name'] == 'xray' or (
-                        proc.info['cmdline'] and
-                        any('xray' in str(cmd) for cmd in proc.info['cmdline'])
-                    ):
-                        # Send SIGHUP to reload config
-                        os.kill(proc.info['pid'], signal.SIGHUP)
-                        logger.info(f"Sent SIGHUP to Xray (PID: {proc.info['pid']})")
-                        await asyncio.sleep(1)  # Wait for reload
-                        return True
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
+            # Reload Xray service using systemctl
+            process = await asyncio.create_subprocess_exec(
+                'systemctl', 'reload', 'xray',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
 
-            logger.error("Xray process not found")
-            return False
+            stdout, stderr = await process.communicate()
+
+            if process.returncode == 0:
+                logger.info("✓ Reloaded Xray configuration via systemctl")
+                await asyncio.sleep(1)  # Wait for reload to complete
+                return True
+            else:
+                logger.error(f"Failed to reload Xray: {stderr.decode()}")
+                return False
         except Exception as e:
             logger.error(f"Failed to reload Xray: {e}")
             return False

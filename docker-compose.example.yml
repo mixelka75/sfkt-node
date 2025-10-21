@@ -1,16 +1,18 @@
 services:
-  xray-node:
+  node-agent:
     build: .
-    container_name: sfkt_xray_node
+    container_name: sfkt_node_agent
     restart: unless-stopped
     network_mode: host
+    privileged: true
     volumes:
-      - xray-config:/etc/xray
-      - ./logs:/var/log/xray
+      # Mount host Xray config directory (read/write access)
+      - /usr/local/etc/xray:/usr/local/etc/xray
+      # Mount host Xray logs directory (read access)
+      - /var/log/xray:/var/log/xray:ro
+      # Mount systemd socket for systemctl commands
+      - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro
+      - /run/systemd:/run/systemd:ro
     env_file:
       - .env
-    cap_add:
-      - NET_ADMIN
-
-volumes:
-  xray-config:
+    depends_on: []
