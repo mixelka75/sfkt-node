@@ -87,6 +87,7 @@
     }
   ],
   "routing": {
+    "domainStrategy": "AsIs",
     "rules": [
       {
         "type": "field",
@@ -101,6 +102,11 @@
           "geoip:private"
         ],
         "outboundTag": "block"
+      },
+      {
+        "type": "field",
+        "network": "tcp,udp",
+        "outboundTag": "direct"
       }
     ]
   }
