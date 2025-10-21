@@ -284,17 +284,78 @@ fi
 # Configure network
 info "Configuring network settings..."
 
-# Enable IP forwarding
+# Detect network interface
+NETWORK_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1)
+if [ -z "$NETWORK_INTERFACE" ]; then
+    warning "Could not detect network interface, using eth0"
+    NETWORK_INTERFACE="eth0"
+else
+    success "Detected network interface: $NETWORK_INTERFACE"
+fi
+
+# Enable IP forwarding permanently
+if ! grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf; then
+    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+fi
 sysctl -w net.ipv4.ip_forward=1 > /dev/null
-echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 
-# Configure iptables
-iptables -P FORWARD ACCEPT
-iptables -t nat -C POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || \
-    iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+# Remove iptables-persistent if installed (conflicts with UFW)
+if dpkg -l | grep -q iptables-persistent; then
+    warning "Removing iptables-persistent (conflicts with UFW)"
+    apt-get remove -y iptables-persistent netfilter-persistent
+fi
 
-# Try to save iptables rules
-netfilter-persistent save 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+# Ensure UFW is installed
+if ! command -v ufw &> /dev/null; then
+    info "Installing UFW..."
+    apt-get install -y ufw
+fi
+
+# Configure UFW
+info "Configuring UFW firewall..."
+
+# Reset UFW to default state
+ufw --force reset
+
+# Set default policies
+ufw default deny incoming
+ufw default allow outgoing
+ufw default allow forward
+
+# Allow SSH (important!)
+ufw allow 22/tcp
+
+# Allow VPN port
+ufw allow $NODE_PORT/tcp
+
+# Enable UFW
+ufw --force enable
+
+# Add NAT MASQUERADE rule
+# Check if rule already exists
+if ! iptables -t nat -C POSTROUTING -o "$NETWORK_INTERFACE" -j MASQUERADE 2>/dev/null; then
+    iptables -t nat -A POSTROUTING -o "$NETWORK_INTERFACE" -j MASQUERADE
+fi
+
+# Make UFW NAT rules persistent
+UFW_BEFORE_RULES="/etc/ufw/before.rules"
+if ! grep -q "POSTROUTING -o $NETWORK_INTERFACE -j MASQUERADE" "$UFW_BEFORE_RULES"; then
+    # Backup original file
+    cp "$UFW_BEFORE_RULES" "$UFW_BEFORE_RULES.backup"
+
+    # Add NAT rules to UFW before.rules
+    cat > /tmp/ufw_nat_rules << EOF
+
+# NAT table rules for VPN
+*nat
+:POSTROUTING ACCEPT [0:0]
+-A POSTROUTING -o $NETWORK_INTERFACE -j MASQUERADE
+COMMIT
+EOF
+
+    # Insert NAT rules at the beginning of the file (before *filter)
+    sed -i '/^*filter/i\# NAT table rules for VPN\n*nat\n:POSTROUTING ACCEPT [0:0]\n-A POSTROUTING -o '"$NETWORK_INTERFACE"' -j MASQUERADE\nCOMMIT\n' "$UFW_BEFORE_RULES"
+fi
 
 success "Network configured"
 
@@ -333,25 +394,40 @@ echo -e "  Name:        $NODE_NAME"
 echo -e "  IP:          $NODE_IP"
 echo -e "  Port:        $NODE_PORT"
 echo -e "  Location:    $NODE_CITY, $NODE_COUNTRY ($NODE_COUNTRY_CODE)"
+echo -e "  Interface:   $NETWORK_INTERFACE"
 echo ""
 echo -e "${BLUE}REALITY Configuration:${NC}"
 echo -e "  Private Key: $REALITY_PRIVATE"
 echo -e "  Public Key:  $REALITY_PUBLIC"
 echo -e "  Short ID:    $REALITY_SHORT"
 echo ""
+echo -e "${RED}╔═════════════════════════════════════════════════════════╗${NC}"
+echo -e "${RED}║  ⚠️  CRITICAL: REBOOT REQUIRED                          ║${NC}"
+echo -e "${RED}║                                                         ║${NC}"
+echo -e "${RED}║  Network rules have been configured. For VPN to work   ║${NC}"
+echo -e "${RED}║  properly, you MUST reboot the server now:             ║${NC}"
+echo -e "${RED}║                                                         ║${NC}"
+echo -e "${RED}║      ${YELLOW}sudo reboot${RED}                                        ║${NC}"
+echo -e "${RED}║                                                         ║${NC}"
+echo -e "${RED}║  After reboot, check that services are running:        ║${NC}"
+echo -e "${RED}║      ${YELLOW}docker compose ps${RED}                                 ║${NC}"
+echo -e "${RED}╚═════════════════════════════════════════════════════════╝${NC}"
+echo ""
 echo -e "${YELLOW}⚠  IMPORTANT: Save the Public Key and Short ID!${NC}"
 echo -e "${YELLOW}   You need to add them to the main server database.${NC}"
 echo ""
-echo -e "${BLUE}Useful Commands:${NC}"
+echo -e "${BLUE}Useful Commands (after reboot):${NC}"
 echo -e "  View logs:          ${GREEN}docker compose logs -f${NC}"
 echo -e "  Check status:       ${GREEN}docker compose ps${NC}"
 echo -e "  Restart services:   ${GREEN}docker compose restart${NC}"
 echo -e "  Update node:        ${GREEN}git pull && docker compose up -d --build${NC}"
 echo ""
 echo -e "${BLUE}Next Steps:${NC}"
-echo -e "  1. Add the Public Key and Short ID to the main server database"
-echo -e "  2. Check logs to verify node registration: ${GREEN}docker compose logs -f${NC}"
-echo -e "  3. Test VPN connection from client"
+echo -e "  1. ${RED}REBOOT THE SERVER NOW: sudo reboot${NC}"
+echo -e "  2. Add the Public Key and Short ID to the main server database"
+echo -e "  3. After reboot, check logs: ${GREEN}docker compose logs -f${NC}"
+echo -e "  4. Test VPN connection from client"
 echo ""
 echo -e "${GREEN}Installation completed successfully!${NC}"
+echo -e "${YELLOW}Don't forget to reboot!${NC}"
 echo ""

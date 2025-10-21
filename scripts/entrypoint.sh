@@ -71,6 +71,60 @@ if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
     echo "Make sure Xray service is running: systemctl status xray"
 fi
 
+# Check network configuration
+echo ""
+echo "Checking network configuration..."
+
+# Check IP forwarding
+if [ -f "/proc/sys/net/ipv4/ip_forward" ]; then
+    IP_FORWARD=$(cat /proc/sys/net/ipv4/ip_forward)
+    if [ "$IP_FORWARD" = "1" ]; then
+        echo "✓ IP forwarding is enabled"
+    else
+        echo "✗ WARNING: IP forwarding is DISABLED"
+        echo "  VPN traffic routing will NOT work!"
+        echo "  Fix: sudo sysctl -w net.ipv4.ip_forward=1"
+    fi
+else
+    echo "⚠ Cannot check IP forwarding (not running in host network mode?)"
+fi
+
+# Check NAT MASQUERADE rule
+INTERFACE=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -1)
+if [ -n "$INTERFACE" ]; then
+    if iptables -t nat -C POSTROUTING -o "$INTERFACE" -j MASQUERADE 2>/dev/null; then
+        echo "✓ NAT MASQUERADE rule exists for interface: $INTERFACE"
+    else
+        echo "✗ WARNING: NAT MASQUERADE rule is MISSING"
+        echo "  VPN clients will NOT be able to access the internet!"
+        echo "  Fix: sudo iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE"
+        echo "  Then reboot the server for changes to take effect"
+    fi
+else
+    echo "⚠ Cannot detect network interface"
+fi
+
+# Check UFW status
+if command -v ufw &> /dev/null 2>&1; then
+    UFW_STATUS=$(ufw status 2>/dev/null | grep -i "Status:" | awk '{print $2}' || echo "unknown")
+    if [ "$UFW_STATUS" = "active" ]; then
+        echo "✓ UFW firewall is active"
+
+        # Check forward policy
+        UFW_FORWARD=$(ufw status verbose 2>/dev/null | grep "^Default:" | grep -i "forward" | awk '{print $NF}' || echo "unknown")
+        if [ "$UFW_FORWARD" = "allow" ]; then
+            echo "✓ UFW forward policy: ALLOW"
+        else
+            echo "✗ WARNING: UFW forward policy is NOT allow (current: $UFW_FORWARD)"
+            echo "  Fix: sudo ufw default allow forward"
+        fi
+    else
+        echo "⚠ UFW is not active (status: $UFW_STATUS)"
+    fi
+else
+    echo "⚠ UFW not installed"
+fi
+
 echo "=========================================="
 echo "Starting node agent..."
 echo "=========================================="
