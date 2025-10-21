@@ -8,7 +8,7 @@ import json
 import os
 import psutil
 import logging
-import subprocess
+import signal
 from datetime import datetime
 from typing import Dict, List, Optional, Set
 
@@ -18,6 +18,134 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+class XrayConfigManager:
+    """Manager for Xray configuration file"""
+
+    def __init__(self, config_path: str = "/etc/xray/config.json"):
+        self.config_path = config_path
+
+    async def read_config(self) -> dict:
+        """Read Xray configuration"""
+        try:
+            with open(self.config_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to read config: {e}")
+            return {}
+
+    async def write_config(self, config: dict) -> bool:
+        """Write Xray configuration"""
+        try:
+            with open(self.config_path, 'w') as f:
+                json.dump(config, f, indent=2)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to write config: {e}")
+            return False
+
+    async def get_inbound_users(self, inbound_tag: str) -> Set[str]:
+        """Get list of user UUIDs in an inbound"""
+        config = await self.read_config()
+        inbounds = config.get('inbounds', [])
+
+        for inbound in inbounds:
+            if inbound.get('tag') == inbound_tag:
+                clients = inbound.get('settings', {}).get('clients', [])
+                return {client.get('id') for client in clients if client.get('id')}
+
+        return set()
+
+    async def add_user(self, inbound_tag: str, user_uuid: str, email: str = "", flow: str = "xtls-rprx-vision") -> bool:
+        """Add a user to an inbound"""
+        config = await self.read_config()
+        inbounds = config.get('inbounds', [])
+
+        for inbound in inbounds:
+            if inbound.get('tag') == inbound_tag:
+                # Ensure settings.clients exists
+                if 'settings' not in inbound:
+                    inbound['settings'] = {}
+                if 'clients' not in inbound['settings']:
+                    inbound['settings']['clients'] = []
+
+                # Check if user already exists
+                clients = inbound['settings']['clients']
+                if any(client.get('id') == user_uuid for client in clients):
+                    logger.warning(f"User {user_uuid} already exists in {inbound_tag}")
+                    return True
+
+                # Add new user
+                new_client = {
+                    "id": user_uuid,
+                    "email": email or f"user_{user_uuid[:8]}",
+                    "level": 0,
+                    "flow": flow
+                }
+                clients.append(new_client)
+
+                # Write config
+                if await self.write_config(config):
+                    logger.info(f"Added user {email} ({user_uuid}) to {inbound_tag}")
+                    return True
+                return False
+
+        logger.error(f"Inbound {inbound_tag} not found")
+        return False
+
+    async def remove_user(self, inbound_tag: str, user_uuid: str) -> bool:
+        """Remove a user from an inbound"""
+        config = await self.read_config()
+        inbounds = config.get('inbounds', [])
+
+        for inbound in inbounds:
+            if inbound.get('tag') == inbound_tag:
+                clients = inbound.get('settings', {}).get('clients', [])
+                original_count = len(clients)
+
+                # Remove user
+                inbound['settings']['clients'] = [
+                    client for client in clients
+                    if client.get('id') != user_uuid
+                ]
+
+                if len(inbound['settings']['clients']) < original_count:
+                    # Write config
+                    if await self.write_config(config):
+                        logger.info(f"Removed user {user_uuid} from {inbound_tag}")
+                        return True
+                    return False
+
+                logger.warning(f"User {user_uuid} not found in {inbound_tag}")
+                return True
+
+        logger.error(f"Inbound {inbound_tag} not found")
+        return False
+
+    async def reload_xray(self) -> bool:
+        """Reload Xray configuration by sending SIGHUP to Xray process"""
+        try:
+            # Find Xray process
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    if proc.info['name'] == 'xray' or (
+                        proc.info['cmdline'] and
+                        any('xray' in str(cmd) for cmd in proc.info['cmdline'])
+                    ):
+                        # Send SIGHUP to reload config
+                        os.kill(proc.info['pid'], signal.SIGHUP)
+                        logger.info(f"Sent SIGHUP to Xray (PID: {proc.info['pid']})")
+                        await asyncio.sleep(1)  # Wait for reload
+                        return True
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+
+            logger.error("Xray process not found")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to reload Xray: {e}")
+            return False
 
 
 class XrayStatsClient:
@@ -87,106 +215,6 @@ class XrayStatsClient:
             logger.error(f"Error querying stats: {e}")
             return []
 
-    async def add_user(self, inbound_tag: str, user_uuid: str, email: str = "") -> bool:
-        """
-        Add a user to an inbound using Xray CLI
-
-        Args:
-            inbound_tag: Tag of the inbound (e.g., "vless-in")
-            user_uuid: User's UUID
-            email: User email/identifier (optional, for logging)
-
-        Returns:
-            True if successful
-        """
-        try:
-            # Build JSON for AddUser command
-            # Reference: https://xtls.github.io/config/api.html#adduseroperation
-            add_user_request = {
-                "tag": inbound_tag,
-                "user": {
-                    "id": user_uuid,
-                    "email": email or f"user_{user_uuid[:8]}",
-                    "level": 0,
-                    "alterId": 0
-                }
-            }
-
-            # Use xray api adi (Add Inbound User)
-            # Command format: echo '{"tag":"vless-in","user":{...}}' | xray api adi -s 127.0.0.1:10085
-            cmd = [
-                self.xray_binary,
-                "api",
-                "adi",
-                "-s", self.api_address
-            ]
-
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-
-            stdout, stderr = await process.communicate(input=json.dumps(add_user_request).encode())
-
-            if process.returncode != 0:
-                logger.error(f"Failed to add user {user_uuid}: {stderr.decode()}")
-                return False
-
-            logger.info(f"✓ Added user {email} ({user_uuid})")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error adding user {user_uuid}: {e}")
-            return False
-
-    async def remove_user(self, inbound_tag: str, user_email: str) -> bool:
-        """
-        Remove a user from an inbound using Xray CLI
-
-        Args:
-            inbound_tag: Tag of the inbound (e.g., "vless-in")
-            user_email: User email/identifier used when adding
-
-        Returns:
-            True if successful
-        """
-        try:
-            # Build JSON for RemoveUser command
-            remove_user_request = {
-                "tag": inbound_tag,
-                "email": user_email
-            }
-
-            # Use xray api rmi (Remove Inbound User)
-            cmd = [
-                self.xray_binary,
-                "api",
-                "rmi",
-                "-s", self.api_address
-            ]
-
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-
-            stdout, stderr = await process.communicate(input=json.dumps(remove_user_request).encode())
-
-            if process.returncode != 0:
-                logger.error(f"Failed to remove user {user_email}: {stderr.decode()}")
-                return False
-
-            logger.info(f"✓ Removed user {user_email}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error removing user {user_email}: {e}")
-            return False
-
 
 class NodeAgent:
     """Node agent for managing Xray and reporting to main server"""
@@ -201,14 +229,12 @@ class NodeAgent:
         self.user_sync_interval = int(os.getenv('USER_SYNC_INTERVAL', '60'))  # seconds
         self.inbound_tag = os.getenv('INBOUND_TAG', 'vless-in')  # Xray inbound tag
 
-        # Xray stats client
+        # Xray managers
         self.xray_stats = XrayStatsClient()
+        self.xray_config = XrayConfigManager()
 
         # Session
         self.session: Optional[aiohttp.ClientSession] = None
-
-        # Track current users (UUID -> email mapping)
-        self.current_users: Dict[str, str] = {}
 
     async def start(self):
         """Start the node agent"""
@@ -430,41 +456,41 @@ class NodeAgent:
                     server_uuids.add(uuid)
                     server_user_map[uuid] = user
 
-            # Current UUIDs in Xray
-            current_uuids = set(self.current_users.keys())
+            # Get current users from Xray config
+            current_uuids = await self.xray_config.get_inbound_users(self.inbound_tag)
 
             # Add new users
             users_to_add = server_uuids - current_uuids
+            added_count = 0
             for uuid in users_to_add:
                 user_data = server_user_map[uuid]
                 email = user_data.get('email', f"user_{uuid[:8]}")
 
-                success = await self.xray_stats.add_user(
+                if await self.xray_config.add_user(
                     inbound_tag=self.inbound_tag,
                     user_uuid=uuid,
                     email=email
-                )
-
-                if success:
-                    self.current_users[uuid] = email
+                ):
+                    added_count += 1
 
             # Remove users no longer on server
             users_to_remove = current_uuids - server_uuids
+            removed_count = 0
             for uuid in users_to_remove:
-                email = self.current_users.get(uuid)
-                if email:
-                    success = await self.xray_stats.remove_user(
-                        inbound_tag=self.inbound_tag,
-                        user_email=email
-                    )
+                if await self.xray_config.remove_user(
+                    inbound_tag=self.inbound_tag,
+                    user_uuid=uuid
+                ):
+                    removed_count += 1
 
-                    if success:
-                        del self.current_users[uuid]
-
-            if users_to_add or users_to_remove:
-                logger.info(f"✓ User sync complete: added {len(users_to_add)}, removed {len(users_to_remove)}, total {len(self.current_users)}")
+            # Reload Xray config if there were changes
+            if added_count > 0 or removed_count > 0:
+                if await self.xray_config.reload_xray():
+                    logger.info(f"✓ User sync complete: added {added_count}, removed {removed_count}, total {len(current_uuids) + added_count - removed_count}")
+                else:
+                    logger.error("Failed to reload Xray config")
             else:
-                logger.debug(f"User sync: no changes (total users: {len(self.current_users)})")
+                logger.debug(f"User sync: no changes (total users: {len(current_uuids)})")
 
         except Exception as e:
             logger.error(f"Error syncing users: {e}")
