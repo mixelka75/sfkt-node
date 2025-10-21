@@ -57,7 +57,7 @@ class XrayConfigManager:
 
         return set()
 
-    async def add_user(self, inbound_tag: str, user_uuid: str, email: str = "", flow: str = "xtls-rprx-vision") -> bool:
+    async def add_user(self, inbound_tag: str, user_uuid: str, email: str = "", flow: str = "") -> bool:
         """Add a user to an inbound"""
         config = await self.read_config()
         inbounds = config.get('inbounds', [])
@@ -80,9 +80,13 @@ class XrayConfigManager:
                 new_client = {
                     "id": user_uuid,
                     "email": email or f"user_{user_uuid[:8]}",
-                    "level": 0,
-                    "flow": flow
+                    "level": 0
                 }
+
+                # Only add flow if specified (not needed for REALITY with TCP)
+                if flow:
+                    new_client["flow"] = flow
+
                 clients.append(new_client)
 
                 # Write config
@@ -192,24 +196,25 @@ class XrayStatsClient:
                 logger.error(f"Xray statsquery failed: {stderr.decode()}")
                 return []
 
-            # Parse output
-            # Output format is one line per stat: "stat_name value"
-            stats = []
-            for line in stdout.decode().strip().split('\n'):
-                if not line:
-                    continue
+            # Parse JSON output
+            # Xray returns JSON format: {"stat": [{"name": "...", "value": 123}, ...]}
+            try:
+                data = json.loads(stdout.decode())
+                stats = data.get('stat', [])
 
-                # Parse line: "user>>>uuid>>>traffic>>>uplink 12345"
-                parts = line.rsplit(None, 1)  # Split from right, max 1 split
-                if len(parts) == 2:
-                    name, value_str = parts
-                    try:
-                        value = int(value_str)
-                        stats.append({'name': name, 'value': value})
-                    except ValueError:
-                        logger.warning(f"Failed to parse value: {value_str}")
+                # Filter out stats without values and ensure value is present
+                result = []
+                for stat in stats:
+                    name = stat.get('name', '')
+                    # value may be missing if counter is 0 or not initialized
+                    value = stat.get('value', 0)
+                    if name:
+                        result.append({'name': name, 'value': value})
 
-            return stats
+                return result
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON from xray statsquery: {e}")
+                return []
 
         except Exception as e:
             logger.error(f"Error querying stats: {e}")
