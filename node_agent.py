@@ -359,6 +359,10 @@ class NodeAgent:
                 'user_traffic': user_traffic
             }
 
+            # Log traffic data for debugging
+            total_bytes = sum(t['upload'] + t['download'] for t in user_traffic.values())
+            logger.info(f"Syncing {len(user_traffic)} users, total: {total_bytes} bytes, data: {user_traffic}")
+
             try:
                 async with self.session.post(
                     f"{self.main_server_url}/api/v1/nodes/{self.node_id}/traffic",
