@@ -91,7 +91,21 @@ chmod +x scripts/generate_reality_keys.sh
 
 ### 4. Настройка Xray конфигурации
 
-Отредактируйте конфигурацию Xray и вставьте сгенерированные ключи:
+**Автоматический способ (рекомендуется):**
+
+CLI скрипт автоматически возьмет ключи из .env и обновит конфигурацию:
+
+```bash
+# Убедитесь, что REALITY ключи уже в .env файле
+# (добавьте их в следующем шаге 5, затем вернитесь сюда)
+
+# После настройки .env примените конфигурацию
+cd /opt/sfkt-node
+chmod +x scripts/xray_config.sh
+sudo scripts/xray_config.sh apply
+```
+
+**Ручной способ:**
 
 ```bash
 # Откройте конфигурацию
@@ -230,6 +244,36 @@ sudo journalctl -u xray -f
 ## Управление
 
 ### Управление Xray (на хосте)
+
+**Использование CLI скрипта (рекомендуется):**
+
+```bash
+# Применить конфигурацию из .env (обновить ключи и перезагрузить)
+sudo scripts/xray_config.sh apply
+
+# Проверить статус Xray
+sudo scripts/xray_config.sh status
+
+# Только обновить конфигурацию (без перезагрузки)
+sudo scripts/xray_config.sh update
+
+# Только проверить конфигурацию
+sudo scripts/xray_config.sh validate
+
+# Только перезагрузить Xray
+sudo scripts/xray_config.sh reload
+
+# Обновить Xray до последней версии
+sudo scripts/xray_config.sh upgrade
+
+# Показать текущую конфигурацию
+sudo scripts/xray_config.sh show
+
+# Помощь
+sudo scripts/xray_config.sh help
+```
+
+**Прямое управление через systemctl:**
 
 ```bash
 # Запуск
