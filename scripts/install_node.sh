@@ -110,29 +110,30 @@ info "Step 5/8: Generating REALITY keys..."
 echo ""
 info "Generating X25519 key pair for REALITY protocol..."
 
-if [ -f "$SCRIPT_DIR/generate_reality_keys.sh" ]; then
-    bash "$SCRIPT_DIR/generate_reality_keys.sh"
+# Generate keys using Docker
+TEMP_KEY_FILE="/tmp/sfkt_reality_keys_$$.tmp"
 
-    # Try to extract keys from output
-    TEMP_KEY_FILE="/tmp/sfkt_reality_keys.tmp"
-    bash "$SCRIPT_DIR/generate_reality_keys.sh" > "$TEMP_KEY_FILE" 2>&1
-
-    REALITY_PRIVATE=$(grep "Private key:" "$TEMP_KEY_FILE" | awk '{print $3}')
-    REALITY_PUBLIC=$(grep "Public key:" "$TEMP_KEY_FILE" | awk '{print $3}')
-    REALITY_SHORT=$(grep "Short ID:" "$TEMP_KEY_FILE" | awk '{print $3}')
-
-    rm -f "$TEMP_KEY_FILE"
+# Run xray x25519 command
+if command -v xray &> /dev/null; then
+    # Use local xray if available
+    xray x25519 > "$TEMP_KEY_FILE" 2>&1
 else
-    # Fallback: generate manually
-    info "Generating keys using Docker..."
-    KEYS_OUTPUT=$(docker run --rm teddysun/xray:latest xray x25519)
-    REALITY_PRIVATE=$(echo "$KEYS_OUTPUT" | grep "Private key:" | awk '{print $3}')
-    REALITY_PUBLIC=$(echo "$KEYS_OUTPUT" | grep "Public key:" | awk '{print $3}')
-    REALITY_SHORT=$(openssl rand -hex 8)
+    # Use Docker
+    docker run --rm teddysun/xray:latest xray x25519 > "$TEMP_KEY_FILE" 2>&1
 fi
 
+# Extract keys from output
+REALITY_PRIVATE=$(grep -i "private" "$TEMP_KEY_FILE" | grep -oE '[A-Za-z0-9_-]{43}' | head -1)
+REALITY_PUBLIC=$(grep -i "public" "$TEMP_KEY_FILE" | grep -oE '[A-Za-z0-9_-]{43}' | head -1)
+
+# Generate Short ID separately
+REALITY_SHORT=$(openssl rand -hex 8)
+
+rm -f "$TEMP_KEY_FILE"
+
+# Validate keys
 if [ -z "$REALITY_PRIVATE" ] || [ -z "$REALITY_PUBLIC" ] || [ -z "$REALITY_SHORT" ]; then
-    error "Failed to generate REALITY keys"
+    error "Failed to generate REALITY keys. Please run 'xray x25519' manually."
 fi
 
 echo ""
