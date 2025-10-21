@@ -123,8 +123,9 @@ else
 fi
 
 # Extract keys from output
-REALITY_PRIVATE=$(grep -i "private" "$TEMP_KEY_FILE" | grep -oE '[A-Za-z0-9_-]{43}' | head -1)
-REALITY_PUBLIC=$(grep -i "public" "$TEMP_KEY_FILE" | grep -oE '[A-Za-z0-9_-]{43}' | head -1)
+# xray x25519 outputs: PrivateKey: xxx, Password: xxx (Password is the public key)
+REALITY_PRIVATE=$(grep -iE "(privatekey|private key)" "$TEMP_KEY_FILE" | grep -oE '[A-Za-z0-9_-]{43,44}' | head -1)
+REALITY_PUBLIC=$(grep -iE "(password|publickey|public key)" "$TEMP_KEY_FILE" | grep -oE '[A-Za-z0-9_-]{43,44}' | head -1)
 
 # Generate Short ID separately
 REALITY_SHORT=$(openssl rand -hex 8)

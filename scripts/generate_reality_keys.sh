@@ -26,11 +26,11 @@ echo "Generating REALITY keys..."
 generate_keys
 
 # Extract keys using multiple patterns (different xray versions output different formats)
-# Try pattern 1: "Private key: xxx"
-PRIVATE_KEY=$(grep -iE "(private|privatekey)" "$TEMP_FILE" | grep -oE '[A-Za-z0-9_-]{43,44}' | head -1)
+# xray x25519 outputs: PrivateKey: xxx, Password: xxx (Password is the public key)
+PRIVATE_KEY=$(grep -iE "(privatekey|private key)" "$TEMP_FILE" | grep -oE '[A-Za-z0-9_-]{43,44}' | head -1)
 
-# Try pattern 2: "Public key: xxx" or "Password: xxx"
-PUBLIC_KEY=$(grep -iE "(public|password)" "$TEMP_FILE" | grep -oE '[A-Za-z0-9_-]{43,44}' | head -1)
+# Password field in xray output is actually the public key
+PUBLIC_KEY=$(grep -iE "(password|publickey|public key)" "$TEMP_FILE" | grep -oE '[A-Za-z0-9_-]{43,44}' | head -1)
 
 # Generate short ID (random 16 hex characters = 8 bytes)
 SHORT_ID=$(openssl rand -hex 8)
