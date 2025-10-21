@@ -68,6 +68,11 @@ load_env() {
 update_config() {
     info "Updating Xray configuration..."
 
+    # Check if jq is installed
+    if ! command -v jq &> /dev/null; then
+        error "jq is required but not installed. Install with: apt-get install jq"
+    fi
+
     # Check if template exists
     if [ ! -f "$XRAY_TEMPLATE" ]; then
         error "Template config not found at $XRAY_TEMPLATE"
@@ -86,14 +91,31 @@ update_config() {
     sed -i "s/PRIVATE_KEY_PLACEHOLDER/$REALITY_PRIVATE_KEY/g" "$XRAY_CONFIG"
     sed -i "s/SHORT_ID_PLACEHOLDER/$REALITY_SHORT_ID/g" "$XRAY_CONFIG"
 
-    # Update SNI if specified
+    # Update SNI if specified - use jq for proper JSON manipulation
     if [ -n "$NODE_SNI" ]; then
-        sed -i "s/\"dest\": \"vk.com:443\"/\"dest\": \"$NODE_SNI:443\"/g" "$XRAY_CONFIG"
+        # Extract base domain and www variant for serverNames
+        BASE_SNI="$NODE_SNI"
+
+        # Use jq to update both dest and serverNames
+        TEMP_CONFIG=$(mktemp)
+        jq --arg sni "$BASE_SNI" \
+           '.inbounds[0].streamSettings.realitySettings.dest = ($sni + ":443") |
+            .inbounds[0].streamSettings.realitySettings.serverNames = [$sni, ("www." + $sni)]' \
+           "$XRAY_CONFIG" > "$TEMP_CONFIG"
+
+        # Replace original config with updated one
+        mv "$TEMP_CONFIG" "$XRAY_CONFIG"
+        success "Updated SNI to $NODE_SNI (dest and serverNames)"
     fi
 
     # Update port if specified
     if [ -n "$NODE_PORT" ] && [ "$NODE_PORT" != "443" ]; then
-        sed -i "s/\"port\": 443/\"port\": $NODE_PORT/g" "$XRAY_CONFIG"
+        TEMP_CONFIG=$(mktemp)
+        jq --arg port "$NODE_PORT" \
+           '.inbounds[0].port = ($port | tonumber)' \
+           "$XRAY_CONFIG" > "$TEMP_CONFIG"
+        mv "$TEMP_CONFIG" "$XRAY_CONFIG"
+        success "Updated port to $NODE_PORT"
     fi
 
     success "Updated Xray configuration"
