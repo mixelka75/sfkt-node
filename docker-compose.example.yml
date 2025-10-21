@@ -5,14 +5,16 @@ services:
     restart: unless-stopped
     network_mode: host
     privileged: true
+    pid: host
     volumes:
+      # Mount host Xray binary (for stats queries)
+      - /usr/local/bin/xray:/usr/local/bin/xray:ro
       # Mount host Xray config directory (read/write access)
       - /usr/local/etc/xray:/usr/local/etc/xray
       # Mount host Xray logs directory (read access)
       - /var/log/xray:/var/log/xray:ro
-      # Mount systemd socket for systemctl commands
-      - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro
-      - /run/systemd:/run/systemd:ro
+      # Mount systemd for systemctl commands
+      - /run/systemd/private:/run/systemd/private
+      - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
     env_file:
       - .env
-    depends_on: []
