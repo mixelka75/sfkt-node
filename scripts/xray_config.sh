@@ -118,7 +118,9 @@ reload_xray() {
         warning "Xray service is not running, starting it..."
         systemctl start xray
     else
-        systemctl reload xray
+        # Xray service doesn't support reload, use restart instead
+        warning "Restarting Xray (this will briefly interrupt connections)..."
+        systemctl restart xray
     fi
 
     sleep 2

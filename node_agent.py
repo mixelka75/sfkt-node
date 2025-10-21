@@ -124,11 +124,12 @@ class XrayConfigManager:
         return False
 
     async def reload_xray(self) -> bool:
-        """Reload Xray configuration via systemctl"""
+        """Reload Xray configuration via systemctl restart"""
         try:
-            # Reload Xray service using systemctl
+            # Xray service doesn't support reload, use restart instead
+            # This will briefly interrupt existing connections
             process = await asyncio.create_subprocess_exec(
-                'systemctl', 'reload', 'xray',
+                'systemctl', 'restart', 'xray',
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
@@ -136,14 +137,14 @@ class XrayConfigManager:
             stdout, stderr = await process.communicate()
 
             if process.returncode == 0:
-                logger.info("✓ Reloaded Xray configuration via systemctl")
-                await asyncio.sleep(1)  # Wait for reload to complete
+                logger.info("✓ Restarted Xray service via systemctl")
+                await asyncio.sleep(2)  # Wait for restart to complete
                 return True
             else:
-                logger.error(f"Failed to reload Xray: {stderr.decode()}")
+                logger.error(f"Failed to restart Xray: {stderr.decode()}")
                 return False
         except Exception as e:
-            logger.error(f"Failed to reload Xray: {e}")
+            logger.error(f"Failed to restart Xray: {e}")
             return False
 
 
