@@ -80,7 +80,8 @@ class XrayConfigManager:
                     new_client = {
                         "id": user_uuid,
                         "email": email or user_uuid,
-                        "level": 0
+                        "level": 0,
+                        "flow": "xtls-rprx-vision"
                     }
                     clients.append(new_client)
                     await self.write_config(config)
@@ -96,7 +97,8 @@ class XrayConfigManager:
                         {
                             "id": user_uuid,
                             "email": email or user_uuid,
-                            "level": 0
+                            "level": 0,
+                            "flow": "xtls-rprx-vision"
                         }
                     ]
                 }
@@ -208,6 +210,67 @@ class XrayConfigManager:
         logger.info("✓ Using API for user management - no restart required")
         return True
 
+    async def validate_and_fix_config(self) -> bool:
+        """
+        Validate Xray configuration and fix common issues.
+
+        Checks:
+        1. All VLESS clients have "flow" parameter set to "xtls-rprx-vision"
+        2. Adds missing flow parameters to existing clients
+
+        Returns:
+            True if config was modified and fixed, False if no changes needed
+        """
+        try:
+            config = await self.read_config()
+            inbounds = config.get('inbounds', [])
+            config_modified = False
+            fixed_clients = []
+
+            for inbound in inbounds:
+                # Only validate VLESS inbounds
+                if inbound.get('protocol') != 'vless':
+                    continue
+
+                inbound_tag = inbound.get('tag', 'unknown')
+                clients = inbound.get('settings', {}).get('clients', [])
+
+                for client in clients:
+                    client_id = client.get('id', 'unknown')
+                    client_email = client.get('email', client_id)
+
+                    # Check if flow parameter is missing or incorrect
+                    current_flow = client.get('flow')
+
+                    if current_flow != 'xtls-rprx-vision':
+                        # Fix: add or update flow parameter
+                        client['flow'] = 'xtls-rprx-vision'
+                        config_modified = True
+                        fixed_clients.append(f"{client_email} ({client_id[:8]}...)")
+
+                        if current_flow is None:
+                            logger.warning(f"⚠ Fixed missing 'flow' parameter for user {client_email} in {inbound_tag}")
+                        else:
+                            logger.warning(f"⚠ Fixed incorrect 'flow' parameter for user {client_email} in {inbound_tag}: '{current_flow}' -> 'xtls-rprx-vision'")
+
+            # Write config if modified
+            if config_modified:
+                if await self.write_config(config):
+                    logger.info(f"✓ Config validation complete: Fixed {len(fixed_clients)} client(s)")
+                    for client_info in fixed_clients:
+                        logger.info(f"  - {client_info}")
+                    return True
+                else:
+                    logger.error("Failed to write fixed config")
+                    return False
+            else:
+                logger.info("✓ Config validation complete: No issues found")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error validating config: {e}")
+            return False
+
 
 class XrayStatsClient:
     """Client for Xray stats API using CLI"""
@@ -309,6 +372,10 @@ class NodeAgent:
                 'Content-Type': 'application/json'
             }
         )
+
+        # Validate and fix Xray configuration on startup
+        logger.info("Validating Xray configuration...")
+        await self.xray_config.validate_and_fix_config()
 
         # Register node if not registered
         if not self.node_id:
