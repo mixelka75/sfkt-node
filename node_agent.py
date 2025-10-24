@@ -109,6 +109,9 @@ class XrayConfigManager:
                 temp_file = f.name
 
             try:
+                # Log the JSON we're sending to API
+                logger.info(f"Adding user via API with config: {json.dumps(user_config, indent=2)}")
+
                 cmd = [
                     "/usr/local/bin/xray",
                     "api",
@@ -125,12 +128,18 @@ class XrayConfigManager:
 
                 stdout, stderr = await process.communicate()
 
+                # Log the output from xray api command
+                if stdout:
+                    logger.info(f"xray api adu stdout: {stdout.decode().strip()}")
+                if stderr:
+                    logger.info(f"xray api adu stderr: {stderr.decode().strip()}")
+
                 if process.returncode == 0:
                     logger.info(f"✓ Added user {email or user_uuid} ({user_uuid}) to {inbound_tag} via API (no restart)")
                     return True
                 else:
                     error_msg = stderr.decode() if stderr else stdout.decode()
-                    logger.error(f"Failed to add user via API: {error_msg}")
+                    logger.error(f"Failed to add user via API (return code {process.returncode}): {error_msg}")
                     return False
             finally:
                 # Clean up temp file
