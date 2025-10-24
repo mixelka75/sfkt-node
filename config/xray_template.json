@@ -8,7 +8,8 @@
   "api": {
     "tag": "api",
     "services": [
-      "StatsService"
+      "StatsService",
+      "HandlerService"
     ]
   },
   "policy": {
