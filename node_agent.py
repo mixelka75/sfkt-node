@@ -145,13 +145,52 @@ class XrayConfigManager:
 
     async def reload_xray(self) -> bool:
         """
-        Reload Xray configuration by sending SIGHUP signal.
+        Reload Xray configuration by sending SIGHUP signal to the process.
 
         SIGHUP causes Xray to gracefully reload config without dropping connections.
         This is needed to apply 'flow' parameter changes.
         """
         try:
-            # First try: systemctl reload (graceful reload without dropping connections)
+            # Method 1: Find Xray PID and send SIGHUP signal directly
+            # This works better from Docker container with pid: host
+
+            # Find xray process ID
+            find_pid_cmd = ["pgrep", "-x", "xray"]
+
+            process = await asyncio.create_subprocess_exec(
+                *find_pid_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+
+            stdout, stderr = await process.communicate()
+
+            if process.returncode == 0 and stdout:
+                pids = stdout.decode().strip().split('\n')
+                if pids:
+                    pid = pids[0]  # Take first PID if multiple
+                    logger.info(f"Found Xray process: PID {pid}")
+
+                    # Send SIGHUP signal for graceful reload
+                    kill_cmd = ["kill", "-HUP", pid]
+
+                    process = await asyncio.create_subprocess_exec(
+                        *kill_cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+
+                    stdout, stderr = await process.communicate()
+
+                    if process.returncode == 0:
+                        self.config_needs_reload = False
+                        logger.info("✓ Sent SIGHUP to Xray (graceful reload, no downtime)")
+                        return True
+                    else:
+                        logger.error(f"Failed to send SIGHUP: {stderr.decode()}")
+
+            # Fallback: Try systemctl reload
+            logger.warning("Could not find Xray PID, trying systemctl reload...")
             cmd = ["systemctl", "reload", "xray"]
 
             process = await asyncio.create_subprocess_exec(
@@ -163,12 +202,15 @@ class XrayConfigManager:
             stdout, stderr = await process.communicate()
 
             if process.returncode == 0:
-                self.config_needs_reload = False  # Reset flag after successful reload
-                logger.info("✓ Reloaded Xray via systemctl reload (graceful, no downtime)")
+                self.config_needs_reload = False
+                logger.info("✓ Reloaded Xray via systemctl reload")
                 return True
             else:
-                # Fallback: try restart
-                logger.warning(f"systemctl reload failed, trying restart...")
+                error_msg = stderr.decode() if stderr else stdout.decode()
+                logger.error(f"systemctl reload failed: {error_msg}")
+
+                # Last resort: restart
+                logger.warning("Trying systemctl restart as last resort...")
                 cmd = ["systemctl", "restart", "xray"]
 
                 process = await asyncio.create_subprocess_exec(
@@ -177,10 +219,10 @@ class XrayConfigManager:
                     stderr=asyncio.subprocess.PIPE
                 )
 
-                await process.communicate()
+                stdout, stderr = await process.communicate()
 
                 if process.returncode == 0:
-                    self.config_needs_reload = False  # Reset flag after successful restart
+                    self.config_needs_reload = False
                     logger.info("✓ Restarted Xray via systemctl (~1-2s downtime)")
                     return True
                 else:
