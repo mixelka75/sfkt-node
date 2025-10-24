@@ -262,6 +262,58 @@ class XrayConfigManager:
             logger.error(f"Error validating config: {e}")
             return False
 
+    async def update_sni(self, new_sni: str, inbound_tag: str = "vless-in") -> bool:
+        """
+        Update SNI in Xray configuration for REALITY
+
+        Args:
+            new_sni: New SNI value (e.g., "vk.com")
+            inbound_tag: Xray inbound tag to update
+
+        Returns:
+            True if updated successfully, False otherwise
+        """
+        try:
+            config = await self.read_config()
+            inbounds = config.get('inbounds', [])
+
+            for inbound in inbounds:
+                if inbound.get('tag') == inbound_tag:
+                    # Update SNI in REALITY settings
+                    stream_settings = inbound.get('streamSettings', {})
+                    reality_settings = stream_settings.get('realitySettings', {})
+
+                    current_sni = reality_settings.get('serverNames', [])
+                    if current_sni and len(current_sni) > 0:
+                        current_sni = current_sni[0]
+                    else:
+                        current_sni = None
+
+                    if current_sni == new_sni:
+                        logger.info(f"SNI already set to '{new_sni}', no change needed")
+                        return True
+
+                    # Update serverNames
+                    reality_settings['serverNames'] = [new_sni]
+                    stream_settings['realitySettings'] = reality_settings
+                    inbound['streamSettings'] = stream_settings
+
+                    # Write config
+                    if await self.write_config(config):
+                        self.config_needs_reload = True
+                        logger.info(f"✓ Updated SNI from '{current_sni}' to '{new_sni}' (reload pending)")
+                        return True
+                    else:
+                        logger.error("Failed to write config when updating SNI")
+                        return False
+
+            logger.error(f"Inbound {inbound_tag} not found in config")
+            return False
+
+        except Exception as e:
+            logger.error(f"Error updating SNI: {e}")
+            return False
+
 
 class XrayStatsClient:
     """Client for Xray stats API using CLI"""
@@ -377,6 +429,7 @@ class NodeAgent:
             asyncio.create_task(self.sync_traffic_loop()),
             asyncio.create_task(self.health_check_loop()),
             asyncio.create_task(self.sync_users_loop()),
+            asyncio.create_task(self.sync_sni_loop()),
             asyncio.create_task(self.reload_xray_loop()),
         ]
 
@@ -617,6 +670,50 @@ class NodeAgent:
 
         except Exception as e:
             logger.error(f"Error syncing users: {e}")
+
+    async def sync_sni_loop(self):
+        """Periodically sync SNI from main server (every 5 minutes)"""
+        sync_interval = 300  # 5 minutes
+        logger.info(f"Starting SNI sync loop (interval: {sync_interval}s)")
+
+        # Wait a bit before first check
+        await asyncio.sleep(30)
+
+        while True:
+            try:
+                await self.sync_sni()
+                await asyncio.sleep(sync_interval)
+            except Exception as e:
+                logger.error(f"Error in SNI sync loop: {e}")
+                await asyncio.sleep(sync_interval)
+
+    async def sync_sni(self):
+        """Sync SNI from main server and update Xray config if changed"""
+        if not self.node_id:
+            logger.warning("Node not registered, skipping SNI sync")
+            return
+
+        try:
+            # Get node info from main server
+            async with self.session.get(
+                f"{self.main_server_url}/api/v1/nodes/{self.node_id}"
+            ) as resp:
+                if resp.status != 200:
+                    logger.error(f"Failed to get node info: {resp.status}")
+                    return
+
+                node_data = await resp.json()
+                server_sni = node_data.get('sni')
+
+                if not server_sni:
+                    logger.debug("No SNI set on server")
+                    return
+
+                # Update SNI in config
+                await self.xray_config.update_sni(server_sni, self.inbound_tag)
+
+        except Exception as e:
+            logger.error(f"Error syncing SNI: {e}")
 
     async def reload_xray_loop(self):
         """Periodically reload Xray if config changed (every 3 minutes)"""
