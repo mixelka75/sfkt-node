@@ -26,6 +26,7 @@ class XrayConfigManager:
 
     def __init__(self, config_path: str = "/usr/local/etc/xray/config.json"):
         self.config_path = config_path
+        self.config_needs_reload = False  # Flag to track if config changed
 
     async def read_config(self) -> dict:
         """Read Xray configuration"""
@@ -85,7 +86,8 @@ class XrayConfigManager:
                     clients.append(new_client)
 
                     if await self.write_config(config):
-                        logger.info(f"✓ Added user {email or user_uuid} to config")
+                        self.config_needs_reload = True  # Mark config as needing reload
+                        logger.info(f"✓ Added user {email or user_uuid} to config (reload pending)")
                         return True
                     else:
                         logger.error(f"Failed to write config when adding user {user_uuid}")
@@ -124,7 +126,8 @@ class XrayConfigManager:
 
                     if len(inbound['settings']['clients']) < original_count:
                         if await self.write_config(config):
-                            logger.info(f"✓ Removed user {user_email} from config")
+                            self.config_needs_reload = True  # Mark config as needing reload
+                            logger.info(f"✓ Removed user {user_email} from config (reload pending)")
                             return True
                         else:
                             logger.error(f"Failed to write config when removing user {user_uuid}")
@@ -160,6 +163,7 @@ class XrayConfigManager:
             stdout, stderr = await process.communicate()
 
             if process.returncode == 0:
+                self.config_needs_reload = False  # Reset flag after successful reload
                 logger.info("✓ Reloaded Xray via systemctl reload (graceful, no downtime)")
                 return True
             else:
@@ -176,6 +180,7 @@ class XrayConfigManager:
                 await process.communicate()
 
                 if process.returncode == 0:
+                    self.config_needs_reload = False  # Reset flag after successful restart
                     logger.info("✓ Restarted Xray via systemctl (~1-2s downtime)")
                     return True
                 else:
@@ -362,6 +367,7 @@ class NodeAgent:
             asyncio.create_task(self.sync_traffic_loop()),
             asyncio.create_task(self.health_check_loop()),
             asyncio.create_task(self.sync_users_loop()),
+            asyncio.create_task(self.reload_xray_loop()),
         ]
 
         try:
@@ -593,15 +599,35 @@ class NodeAgent:
                 ):
                     removed_count += 1
 
-            # Reload Xray if there were any changes
+            # Log results (reload will happen in periodic reload loop)
             if added_count > 0 or removed_count > 0:
-                await self.xray_config.reload_xray()
-                logger.info(f"✓ User sync complete: added {added_count}, removed {removed_count}, total {len(current_uuids) + added_count - removed_count}")
+                logger.info(f"✓ User sync complete: added {added_count}, removed {removed_count}, total {len(current_uuids) + added_count - removed_count} (reload scheduled)")
             else:
                 logger.debug(f"User sync: no changes (total users: {len(current_uuids)})")
 
         except Exception as e:
             logger.error(f"Error syncing users: {e}")
+
+    async def reload_xray_loop(self):
+        """Periodically reload Xray if config changed (every 3 minutes)"""
+        reload_interval = 180  # 3 minutes = 180 seconds
+        logger.info(f"Starting Xray reload loop (interval: {reload_interval}s)")
+
+        # Wait a bit before first check
+        await asyncio.sleep(reload_interval)
+
+        while True:
+            try:
+                if self.xray_config.config_needs_reload:
+                    logger.info("Config changes detected, reloading Xray...")
+                    await self.xray_config.reload_xray()
+                else:
+                    logger.debug("No config changes, skipping reload")
+
+                await asyncio.sleep(reload_interval)
+            except Exception as e:
+                logger.error(f"Error in reload loop: {e}")
+                await asyncio.sleep(reload_interval)
 
 
 async def main():
