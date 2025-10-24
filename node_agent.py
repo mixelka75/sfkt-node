@@ -6,6 +6,7 @@ import asyncio
 import aiohttp
 import json
 import os
+import tempfile
 import subprocess
 import psutil
 import logging
@@ -86,31 +87,55 @@ class XrayConfigManager:
                     break
 
             # Now use Xray API to add user dynamically (no restart needed)
-            cmd = [
-                "/usr/local/bin/xray",
-                "api",
-                "adi",
-                "-s", "127.0.0.1:10085",
-                "-tag", inbound_tag,
-                "-uuid", user_uuid,
-                "-email", email or user_uuid
-            ]
+            # Create temporary JSON file for xray api adu command
+            user_config = {
+                "tag": inbound_tag,
+                "protocol": "vless",
+                "settings": {
+                    "clients": [
+                        {
+                            "id": user_uuid,
+                            "email": email or user_uuid,
+                            "level": 0
+                        }
+                    ]
+                }
+            }
 
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                json.dump(user_config, f)
+                temp_file = f.name
 
-            stdout, stderr = await process.communicate()
+            try:
+                cmd = [
+                    "/usr/local/bin/xray",
+                    "api",
+                    "adu",
+                    "-s", "127.0.0.1:10085",
+                    temp_file
+                ]
 
-            if process.returncode == 0:
-                logger.info(f"✓ Added user {email or user_uuid} ({user_uuid}) to {inbound_tag} via API (no restart)")
-                return True
-            else:
-                error_msg = stderr.decode() if stderr else stdout.decode()
-                logger.error(f"Failed to add user via API: {error_msg}")
-                return False
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+
+                stdout, stderr = await process.communicate()
+
+                if process.returncode == 0:
+                    logger.info(f"✓ Added user {email or user_uuid} ({user_uuid}) to {inbound_tag} via API (no restart)")
+                    return True
+                else:
+                    error_msg = stderr.decode() if stderr else stdout.decode()
+                    logger.error(f"Failed to add user via API: {error_msg}")
+                    return False
+            finally:
+                # Clean up temp file
+                try:
+                    os.unlink(temp_file)
+                except:
+                    pass
 
         except Exception as e:
             logger.error(f"Error adding user via API: {e}")
@@ -119,15 +144,23 @@ class XrayConfigManager:
     async def remove_user(self, inbound_tag: str, user_uuid: str) -> bool:
         """Remove a user from an inbound using Xray API"""
         try:
-            # First, update config file to keep it in sync
+            # First, get user email from config before removing
             config = await self.read_config()
             inbounds = config.get('inbounds', [])
+            user_email = user_uuid  # Default to UUID as email
 
             for inbound in inbounds:
                 if inbound.get('tag') == inbound_tag:
                     clients = inbound.get('settings', {}).get('clients', [])
-                    original_count = len(clients)
 
+                    # Find the user's email
+                    for client in clients:
+                        if client.get('id') == user_uuid:
+                            user_email = client.get('email', user_uuid)
+                            break
+
+                    # Remove from config
+                    original_count = len(clients)
                     inbound['settings']['clients'] = [
                         client for client in clients
                         if client.get('id') != user_uuid
@@ -138,13 +171,14 @@ class XrayConfigManager:
                     break
 
             # Now use Xray API to remove user dynamically (no restart needed)
+            # Command: xray api rmu -s 127.0.0.1:10085 -tag="vless-in" "email@example.com"
             cmd = [
                 "/usr/local/bin/xray",
                 "api",
-                "rmi",
+                "rmu",
                 "-s", "127.0.0.1:10085",
-                "-tag", inbound_tag,
-                "-uuid", user_uuid
+                f"-tag={inbound_tag}",
+                user_email
             ]
 
             process = await asyncio.create_subprocess_exec(
@@ -156,7 +190,7 @@ class XrayConfigManager:
             stdout, stderr = await process.communicate()
 
             if process.returncode == 0:
-                logger.info(f"✓ Removed user {user_uuid} from {inbound_tag} via API (no restart)")
+                logger.info(f"✓ Removed user {user_email} ({user_uuid}) from {inbound_tag} via API (no restart)")
                 return True
             else:
                 error_msg = stderr.decode() if stderr else stdout.decode()
