@@ -148,9 +148,8 @@ class XrayConfigManager:
         This is needed to apply 'flow' parameter changes.
         """
         try:
-            # Try graceful reload via SIGHUP signal to xray process
-            # This is much faster than full restart and doesn't drop connections
-            cmd = ["pkill", "-HUP", "-x", "xray"]
+            # First try: systemctl reload (graceful reload without dropping connections)
+            cmd = ["systemctl", "reload", "xray"]
 
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -161,12 +160,12 @@ class XrayConfigManager:
             stdout, stderr = await process.communicate()
 
             if process.returncode == 0:
-                logger.info("✓ Sent reload signal to Xray (graceful reload)")
+                logger.info("✓ Reloaded Xray via systemctl reload (graceful, no downtime)")
                 return True
             else:
-                # Fallback: try systemctl reload
-                logger.warning(f"pkill -HUP failed, trying systemctl reload...")
-                cmd = ["systemctl", "reload", "xray"]
+                # Fallback: try restart
+                logger.warning(f"systemctl reload failed, trying restart...")
+                cmd = ["systemctl", "restart", "xray"]
 
                 process = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -177,7 +176,7 @@ class XrayConfigManager:
                 await process.communicate()
 
                 if process.returncode == 0:
-                    logger.info("✓ Reloaded Xray via systemctl")
+                    logger.info("✓ Restarted Xray via systemctl (~1-2s downtime)")
                     return True
                 else:
                     logger.error("Failed to reload Xray - config changes may not be applied!")
