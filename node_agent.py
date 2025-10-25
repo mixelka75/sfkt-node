@@ -396,10 +396,14 @@ class NodeAgent:
         self.health_check_interval = int(os.getenv('HEALTH_CHECK_INTERVAL', '60'))
         self.user_sync_interval = int(os.getenv('USER_SYNC_INTERVAL', '60'))  # seconds
         self.inbound_tag = os.getenv('INBOUND_TAG', 'vless-in')  # Xray inbound tag
+        self.active_users_window = 300  # 5 minutes in seconds
 
         # Xray managers
         self.xray_stats = XrayStatsClient()
         self.xray_config = XrayConfigManager()
+
+        # Track user activity (uuid -> last_activity_timestamp)
+        self.user_last_activity: Dict[str, float] = {}
 
         # Session
         self.session: Optional[aiohttp.ClientSession] = None
@@ -500,6 +504,8 @@ class NodeAgent:
 
         # Parse stats
         user_traffic = {}
+        current_time = datetime.utcnow().timestamp()
+
         for stat in stats:
             name = stat.get('name', '')
             value = stat.get('value', 0)
@@ -519,6 +525,10 @@ class NodeAgent:
                 user_traffic[user_uuid]['upload'] = value
             elif direction == 'downlink':
                 user_traffic[user_uuid]['download'] = value
+
+            # Update last activity timestamp if user has any traffic
+            if value > 0:
+                self.user_last_activity[user_uuid] = current_time
 
         # Send to main server
         if user_traffic:
@@ -567,15 +577,19 @@ class NodeAgent:
         memory = psutil.virtual_memory()
         network = psutil.net_io_counters()
 
-        # Count active connections (approximate)
-        connections = len(psutil.net_connections(kind='inet'))
+        # Count active VPN users (users with traffic in last 5 minutes)
+        current_time = datetime.utcnow().timestamp()
+        active_connections = sum(
+            1 for last_activity in self.user_last_activity.values()
+            if (current_time - last_activity) <= self.active_users_window
+        )
 
         payload = {
             'node_id': self.node_id,
             'timestamp': datetime.utcnow().isoformat(),
             'cpu_usage': cpu_percent,
             'memory_usage': memory.percent,
-            'active_connections': connections,
+            'active_connections': active_connections,
             'is_healthy': True
         }
 
