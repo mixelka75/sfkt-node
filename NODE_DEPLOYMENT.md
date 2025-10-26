@@ -42,7 +42,30 @@ ufw --force enable
 ufw status
 ```
 
-### 3. Установка Docker
+### 3. Освобождение порта 443 (Остановка nginx/apache)
+
+**ВАЖНО**: Xray должен слушать на порту 443. Если на сервере уже установлен nginx, apache или другой веб-сервер, его нужно остановить и отключить.
+
+```bash
+# Проверьте, что слушает на порту 443
+sudo ss -tulpn | grep :443
+
+# Если порт занят nginx:
+sudo systemctl stop nginx
+sudo systemctl disable nginx
+
+# Если порт занят apache2:
+sudo systemctl stop apache2
+sudo systemctl disable apache2
+
+# Проверьте, что порт свободен
+sudo ss -tulpn | grep :443
+# Не должно быть никакого вывода
+```
+
+**Примечание**: Если вам нужен веб-сервер на этом сервере, настройте его на другой порт (например, 8080) или используйте отдельный сервер для веб-приложений.
+
+### 4. Установка Docker
 
 ```bash
 # Установите Docker используя официальный скрипт
@@ -512,6 +535,48 @@ ls -la /usr/local/etc/xray/config.json
 # Проверьте, что порт 443 не занят
 ss -tulpn | grep :443
 ```
+
+### Ошибка: "address already in use" или порт 443 занят
+
+**Причина**: Порт 443 уже используется другим сервисом (обычно nginx или apache).
+
+**Решение**:
+
+```bash
+# 1. Найдите процесс, занимающий порт 443
+sudo ss -tulpn | grep :443
+# или
+sudo lsof -i :443
+
+# 2. Если это nginx - остановите и отключите его
+sudo systemctl stop nginx
+sudo systemctl disable nginx
+sudo systemctl status nginx  # Должен показать "inactive (dead)"
+
+# 3. Если это apache2 - остановите и отключите
+sudo systemctl stop apache2
+sudo systemctl disable apache2
+sudo systemctl status apache2  # Должен показать "inactive (dead)"
+
+# 4. Убедитесь, что порт свободен
+sudo ss -tulpn | grep :443
+# Не должно быть вывода
+
+# 5. Запустите Xray
+sudo systemctl start xray
+sudo systemctl status xray
+
+# 6. Проверьте, что Xray слушает на порту 443
+sudo ss -tulpn | grep :443
+# Должен показать процесс xray
+```
+
+**Альтернатива**: Если вам необходим веб-сервер на этом же сервере, измените порт VPN в .env файле:
+```bash
+nano /opt/sfkt/node-service/.env
+# Измените NODE_PORT=443 на NODE_PORT=8443
+```
+Затем пересоздайте конфигурацию и не забудьте открыть новый порт в firewall.
 
 ### Node Agent не может управлять Xray
 
