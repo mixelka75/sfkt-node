@@ -17,7 +17,8 @@ RUN apt-get update && apt-get install -y \
 RUN pip3 install --no-cache-dir --break-system-packages \
     requests \
     aiohttp \
-    psutil
+    psutil \
+    xtlsapi
 
 # Copy node agent
 COPY node_agent.py /usr/local/bin/node_agent.py

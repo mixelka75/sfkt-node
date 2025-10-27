@@ -12,6 +12,7 @@ import psutil
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Set
+from xtlsapi import XrayClient
 
 # Configure logging
 logging.basicConfig(
@@ -31,6 +32,10 @@ class XrayConfigManager:
 
     def __init__(self, config_path: str = "/usr/local/etc/xray/config.json"):
         self.config_path = config_path
+        # Initialize gRPC client for zero-downtime user management
+        self.xray_api_host = os.getenv('XRAY_API_HOST', '127.0.0.1')
+        self.xray_api_port = int(os.getenv('XRAY_API_PORT', '10085'))
+        self.xray_client = XrayClient(self.xray_api_host, self.xray_api_port)
 
     async def read_config(self) -> dict:
         """Read Xray configuration"""
@@ -65,30 +70,45 @@ class XrayConfigManager:
 
     async def add_user(self, inbound_tag: str, user_uuid: str, email: str = "", flow: str = "") -> bool:
         """
-        Add a user to config file AND runtime via API (zero-downtime + persistence).
+        Add user with zero-downtime via gRPC API + persist to config file.
 
-        First updates config file, then uses 'xray api adu' to update runtime without restart.
-        This ensures both persistence (config survives Xray restart) and zero-downtime.
+        Uses xtlsapi library for direct gRPC calls to Xray (like Marzban does).
+        First adds to runtime for immediate activation, then persists to config.
         """
         try:
             email = email or user_uuid
             flow = flow or "xtls-rprx-vision"
 
-            # STEP 1: Update config file first (for persistence)
+            # STEP 1: Add to runtime via gRPC (zero-downtime)
+            try:
+                user = self.xray_client.add_client(
+                    inbound_tag=inbound_tag,
+                    uuid=user_uuid,
+                    user_email=email,
+                    protocol='vless',
+                    flow=flow
+                )
+                if not user:
+                    logger.error(f"Failed to add user {email} via gRPC")
+                    return False
+            except Exception as e:
+                logger.error(f"gRPC add_client failed: {e}")
+                return False
+
+            # STEP 2: Update config file (for persistence)
             config = await self.read_config()
             inbounds = config.get('inbounds', [])
-            config_updated = False
 
             for inbound in inbounds:
                 if inbound.get('tag') == inbound_tag:
                     clients = inbound.get('settings', {}).get('clients', [])
 
-                    # Check if user already exists in config
+                    # Check if user already in config
                     if any(c.get('id') == user_uuid for c in clients):
-                        logger.debug(f"User {email} already in config")
+                        logger.info(f"✓ Added user {email} to runtime (already in config)")
                         return True
 
-                    # Add user to config
+                    # Add to config
                     clients.append({
                         "id": user_uuid,
                         "email": email,
@@ -96,60 +116,15 @@ class XrayConfigManager:
                         "flow": flow
                     })
 
-                    # Write updated config
-                    if not await self.write_config(config):
-                        logger.error("Failed to write config when adding user")
-                        return False
+                    if await self.write_config(config):
+                        logger.info(f"✓ Added user {email} (runtime + config, zero-downtime)")
+                        return True
+                    else:
+                        logger.warning(f"Added to runtime but config save failed")
+                        return True  # User still works, just not persisted
 
-                    config_updated = True
-                    break
-
-            if not config_updated:
-                logger.error(f"Inbound {inbound_tag} not found in config")
-                return False
-
-            # STEP 2: Update runtime via API (zero-downtime)
-            user_data = {
-                "email": email,
-                "id": user_uuid,
-                "level": 0,
-                "flow": flow
-            }
-
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-                json.dump(user_data, f)
-                temp_file = f.name
-
-            try:
-                cmd = [
-                    "xray", "api", "adu",
-                    "-s", "127.0.0.1:10085",
-                    temp_file
-                ]
-
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-
-                stdout, stderr = await process.communicate()
-
-                if process.returncode == 0:
-                    logger.info(f"✓ Added user {email} (config + runtime, zero-downtime)")
-                    return True
-                else:
-                    error_msg = stderr.decode() if stderr else "unknown error"
-                    logger.warning(f"Added to config but API failed: {error_msg}")
-                    # User still added to config, will work after Xray restart
-                    return True
-
-            finally:
-                # Clean up temporary file
-                try:
-                    os.unlink(temp_file)
-                except:
-                    pass
+            logger.error(f"Inbound {inbound_tag} not found")
+            return False
 
         except Exception as e:
             logger.error(f"Error adding user: {e}")
@@ -157,64 +132,43 @@ class XrayConfigManager:
 
     async def remove_user(self, inbound_tag: str, user_uuid: str) -> bool:
         """
-        Remove a user from runtime AND config file (zero-downtime + persistence).
+        Remove user with zero-downtime via gRPC API + remove from config.
 
-        First removes from runtime via API, then updates config file.
-        This ensures both zero-downtime and persistence (config survives Xray restart).
+        Uses xtlsapi library for direct gRPC calls to Xray (like Marzban does).
+        First removes from runtime for immediate effect, then updates config.
         """
         try:
             user_email = user_uuid
 
-            # STEP 1: Remove from runtime via API (zero-downtime)
-            cmd = [
-                "xray", "api", "rmu",
-                "-s", "127.0.0.1:10085",
-                f"-tag={inbound_tag}",
-                user_email
-            ]
-
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-
-            stdout, stderr = await process.communicate()
-
-            if process.returncode != 0:
-                error_msg = stderr.decode() if stderr else "unknown error"
-                # If user not found in runtime, it's okay - continue to remove from config
-                if "not found" not in error_msg.lower() and "no such" not in error_msg.lower():
-                    logger.warning(f"API removal failed but continuing: {error_msg}")
+            # STEP 1: Remove from runtime via gRPC (zero-downtime)
+            try:
+                self.xray_client.remove_client(
+                    inbound_tag=inbound_tag,
+                    user_email=user_email
+                )
+            except Exception as e:
+                logger.warning(f"gRPC remove_client failed (user may not exist): {e}")
 
             # STEP 2: Remove from config file (for persistence)
             config = await self.read_config()
             inbounds = config.get('inbounds', [])
-            removed = False
 
             for inbound in inbounds:
                 if inbound.get('tag') == inbound_tag:
                     clients = inbound.get('settings', {}).get('clients', [])
                     original_count = len(clients)
 
-                    # Remove user from clients list
                     clients[:] = [c for c in clients if c.get('id') != user_uuid]
 
                     if len(clients) < original_count:
-                        removed = True
                         if await self.write_config(config):
                             logger.info(f"✓ Removed user {user_email} (runtime + config, zero-downtime)")
                             return True
                         else:
-                            logger.error("Failed to write config after removing user")
-                            return False
-                    break
+                            logger.warning(f"Removed from runtime but config save failed")
+                            return True
 
-            if not removed:
-                logger.debug(f"User {user_email} not found in config")
-                # Even if not in config, consider success if removed from runtime
-                return True
-
+            logger.info(f"✓ Removed user {user_email} from runtime")
             return True
 
         except Exception as e:
