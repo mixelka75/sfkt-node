@@ -81,11 +81,12 @@ class XrayConfigManager:
 
             # STEP 1: Add to runtime via gRPC (zero-downtime)
             try:
+                # add_client(inbound_tag, uuid, user_email, protocol, flow=...)
                 user = self.xray_client.add_client(
-                    inbound_tag=inbound_tag,
-                    uuid=user_uuid,
-                    user_email=email,
-                    protocol='vless',
+                    inbound_tag,
+                    user_uuid,
+                    email,
+                    'vless',
                     flow=flow
                 )
                 if not user:
@@ -142,10 +143,8 @@ class XrayConfigManager:
 
             # STEP 1: Remove from runtime via gRPC (zero-downtime)
             try:
-                self.xray_client.remove_client(
-                    inbound_tag=inbound_tag,
-                    user_email=user_email
-                )
+                # remove_client(inbound_tag, user_email)
+                self.xray_client.remove_client(inbound_tag, user_email)
             except Exception as e:
                 logger.warning(f"gRPC remove_client failed (user may not exist): {e}")
 
