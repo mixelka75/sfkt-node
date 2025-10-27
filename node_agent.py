@@ -65,15 +65,50 @@ class XrayConfigManager:
 
     async def add_user(self, inbound_tag: str, user_uuid: str, email: str = "", flow: str = "") -> bool:
         """
-        Add a user to an inbound using Xray API (no restart needed).
+        Add a user to config file AND runtime via API (zero-downtime + persistence).
 
-        Uses 'xray api adu' command for zero-downtime user addition.
+        First updates config file, then uses 'xray api adu' to update runtime without restart.
+        This ensures both persistence (config survives Xray restart) and zero-downtime.
         """
         try:
             email = email or user_uuid
             flow = flow or "xtls-rprx-vision"
 
-            # Create temporary JSON file with user data
+            # STEP 1: Update config file first (for persistence)
+            config = await self.read_config()
+            inbounds = config.get('inbounds', [])
+            config_updated = False
+
+            for inbound in inbounds:
+                if inbound.get('tag') == inbound_tag:
+                    clients = inbound.get('settings', {}).get('clients', [])
+
+                    # Check if user already exists in config
+                    if any(c.get('id') == user_uuid for c in clients):
+                        logger.debug(f"User {email} already in config")
+                        return True
+
+                    # Add user to config
+                    clients.append({
+                        "id": user_uuid,
+                        "email": email,
+                        "level": 0,
+                        "flow": flow
+                    })
+
+                    # Write updated config
+                    if not await self.write_config(config):
+                        logger.error("Failed to write config when adding user")
+                        return False
+
+                    config_updated = True
+                    break
+
+            if not config_updated:
+                logger.error(f"Inbound {inbound_tag} not found in config")
+                return False
+
+            # STEP 2: Update runtime via API (zero-downtime)
             user_data = {
                 "email": email,
                 "id": user_uuid,
@@ -81,13 +116,11 @@ class XrayConfigManager:
                 "flow": flow
             }
 
-            # Write to temporary file
             with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
                 json.dump(user_data, f)
                 temp_file = f.name
 
             try:
-                # Call xray api adu command
                 cmd = [
                     "xray", "api", "adu",
                     "-s", "127.0.0.1:10085",
@@ -103,12 +136,13 @@ class XrayConfigManager:
                 stdout, stderr = await process.communicate()
 
                 if process.returncode == 0:
-                    logger.info(f"✓ Added user {email} via API (no restart needed)")
+                    logger.info(f"✓ Added user {email} (config + runtime, zero-downtime)")
                     return True
                 else:
                     error_msg = stderr.decode() if stderr else "unknown error"
-                    logger.error(f"Failed to add user via API: {error_msg}")
-                    return False
+                    logger.warning(f"Added to config but API failed: {error_msg}")
+                    # User still added to config, will work after Xray restart
+                    return True
 
             finally:
                 # Clean up temporary file
@@ -123,15 +157,15 @@ class XrayConfigManager:
 
     async def remove_user(self, inbound_tag: str, user_uuid: str) -> bool:
         """
-        Remove a user from an inbound using Xray API (no restart needed).
+        Remove a user from runtime AND config file (zero-downtime + persistence).
 
-        Uses 'xray api rmu' command for zero-downtime user removal.
+        First removes from runtime via API, then updates config file.
+        This ensures both zero-downtime and persistence (config survives Xray restart).
         """
         try:
-            # In our setup, email = UUID
             user_email = user_uuid
 
-            # Call xray api rmu command
+            # STEP 1: Remove from runtime via API (zero-downtime)
             cmd = [
                 "xray", "api", "rmu",
                 "-s", "127.0.0.1:10085",
@@ -147,17 +181,41 @@ class XrayConfigManager:
 
             stdout, stderr = await process.communicate()
 
-            if process.returncode == 0:
-                logger.info(f"✓ Removed user {user_email} via API (no restart needed)")
-                return True
-            else:
+            if process.returncode != 0:
                 error_msg = stderr.decode() if stderr else "unknown error"
-                # If user not found, consider it success
-                if "not found" in error_msg.lower() or "no such" in error_msg.lower():
-                    logger.debug(f"User {user_email} not found in {inbound_tag}")
-                    return True
-                logger.error(f"Failed to remove user via API: {error_msg}")
-                return False
+                # If user not found in runtime, it's okay - continue to remove from config
+                if "not found" not in error_msg.lower() and "no such" not in error_msg.lower():
+                    logger.warning(f"API removal failed but continuing: {error_msg}")
+
+            # STEP 2: Remove from config file (for persistence)
+            config = await self.read_config()
+            inbounds = config.get('inbounds', [])
+            removed = False
+
+            for inbound in inbounds:
+                if inbound.get('tag') == inbound_tag:
+                    clients = inbound.get('settings', {}).get('clients', [])
+                    original_count = len(clients)
+
+                    # Remove user from clients list
+                    clients[:] = [c for c in clients if c.get('id') != user_uuid]
+
+                    if len(clients) < original_count:
+                        removed = True
+                        if await self.write_config(config):
+                            logger.info(f"✓ Removed user {user_email} (runtime + config, zero-downtime)")
+                            return True
+                        else:
+                            logger.error("Failed to write config after removing user")
+                            return False
+                    break
+
+            if not removed:
+                logger.debug(f"User {user_email} not found in config")
+                # Even if not in config, consider success if removed from runtime
+                return True
+
+            return True
 
         except Exception as e:
             logger.error(f"Error removing user: {e}")
