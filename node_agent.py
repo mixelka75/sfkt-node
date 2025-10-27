@@ -65,52 +65,57 @@ class XrayConfigManager:
 
     async def add_user(self, inbound_tag: str, user_uuid: str, email: str = "", flow: str = "") -> bool:
         """
-        Add a user to an inbound by updating config file and reloading immediately.
+        Add a user to an inbound using Xray API (no restart needed).
 
-        This causes ~1-2s downtime but is better than batched reloads every 3 minutes.
+        Uses 'xray api adu' command for zero-downtime user addition.
         """
         try:
             email = email or user_uuid
             flow = flow or "xtls-rprx-vision"
 
-            config = await self.read_config()
-            inbounds = config.get('inbounds', [])
+            # Create temporary JSON file with user data
+            user_data = {
+                "email": email,
+                "id": user_uuid,
+                "level": 0,
+                "flow": flow
+            }
 
-            for inbound in inbounds:
-                if inbound.get('tag') == inbound_tag:
-                    if 'settings' not in inbound:
-                        inbound['settings'] = {}
-                    if 'clients' not in inbound['settings']:
-                        inbound['settings']['clients'] = []
+            # Write to temporary file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                json.dump(user_data, f)
+                temp_file = f.name
 
-                    clients = inbound['settings']['clients']
-                    if any(client.get('id') == user_uuid for client in clients):
-                        logger.debug(f"User {user_uuid} already exists in {inbound_tag}")
-                        return True
+            try:
+                # Call xray api adu command
+                cmd = [
+                    "xray", "api", "adu",
+                    "-s", "127.0.0.1:10085",
+                    temp_file
+                ]
 
-                    new_client = {
-                        "id": user_uuid,
-                        "email": email,
-                        "level": 0,
-                        "flow": flow
-                    }
-                    clients.append(new_client)
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
 
-                    # Write config and reload immediately
-                    if await self.write_config(config):
-                        logger.info(f"✓ Added user {email} to config, reloading Xray...")
-                        if await self.reload_xray():
-                            logger.info("✓ Xray reloaded successfully")
-                            return True
-                        else:
-                            logger.error("Failed to reload Xray after adding user")
-                            return False
-                    else:
-                        logger.error(f"Failed to write config when adding user {user_uuid}")
-                        return False
+                stdout, stderr = await process.communicate()
 
-            logger.error(f"Inbound {inbound_tag} not found in config")
-            return False
+                if process.returncode == 0:
+                    logger.info(f"✓ Added user {email} via API (no restart needed)")
+                    return True
+                else:
+                    error_msg = stderr.decode() if stderr else "unknown error"
+                    logger.error(f"Failed to add user via API: {error_msg}")
+                    return False
+
+            finally:
+                # Clean up temporary file
+                try:
+                    os.unlink(temp_file)
+                except:
+                    pass
 
         except Exception as e:
             logger.error(f"Error adding user: {e}")
@@ -118,51 +123,41 @@ class XrayConfigManager:
 
     async def remove_user(self, inbound_tag: str, user_uuid: str) -> bool:
         """
-        Remove a user from an inbound by updating config file and reloading immediately.
+        Remove a user from an inbound using Xray API (no restart needed).
 
-        This causes ~1-2s downtime but is better than batched reloads every 3 minutes.
+        Uses 'xray api rmu' command for zero-downtime user removal.
         """
         try:
-            config = await self.read_config()
-            inbounds = config.get('inbounds', [])
+            # In our setup, email = UUID
             user_email = user_uuid
 
-            for inbound in inbounds:
-                if inbound.get('tag') == inbound_tag:
-                    clients = inbound.get('settings', {}).get('clients', [])
+            # Call xray api rmu command
+            cmd = [
+                "xray", "api", "rmu",
+                "-s", "127.0.0.1:10085",
+                f"-tag={inbound_tag}",
+                user_email
+            ]
 
-                    # Find the user's email for logging
-                    for client in clients:
-                        if client.get('id') == user_uuid:
-                            user_email = client.get('email', user_uuid)
-                            break
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
 
-                    # Remove from config
-                    original_count = len(clients)
-                    inbound['settings']['clients'] = [
-                        client for client in clients
-                        if client.get('id') != user_uuid
-                    ]
+            stdout, stderr = await process.communicate()
 
-                    if len(inbound['settings']['clients']) < original_count:
-                        # Write config and reload immediately
-                        if await self.write_config(config):
-                            logger.info(f"✓ Removed user {user_email} from config, reloading Xray...")
-                            if await self.reload_xray():
-                                logger.info("✓ Xray reloaded successfully")
-                                return True
-                            else:
-                                logger.error("Failed to reload Xray after removing user")
-                                return False
-                        else:
-                            logger.error(f"Failed to write config when removing user {user_uuid}")
-                            return False
-                    else:
-                        logger.debug(f"User {user_uuid} not found in {inbound_tag}")
-                        return True
-
-            logger.error(f"Inbound {inbound_tag} not found in config")
-            return False
+            if process.returncode == 0:
+                logger.info(f"✓ Removed user {user_email} via API (no restart needed)")
+                return True
+            else:
+                error_msg = stderr.decode() if stderr else "unknown error"
+                # If user not found, consider it success
+                if "not found" in error_msg.lower() or "no such" in error_msg.lower():
+                    logger.debug(f"User {user_email} not found in {inbound_tag}")
+                    return True
+                logger.error(f"Failed to remove user via API: {error_msg}")
+                return False
 
         except Exception as e:
             logger.error(f"Error removing user: {e}")
