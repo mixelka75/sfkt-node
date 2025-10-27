@@ -21,12 +21,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# Note: Xray CLI doesn't provide direct commands for adding/removing individual users
+# The API commands adi/rmi work with entire inbounds, not individual users
+# We use immediate reload after config changes instead of batching
+
+
 class XrayConfigManager:
     """Manager for Xray configuration file"""
 
     def __init__(self, config_path: str = "/usr/local/etc/xray/config.json"):
         self.config_path = config_path
-        self.config_needs_reload = False  # Flag to track if config changed
 
     async def read_config(self) -> dict:
         """Read Xray configuration"""
@@ -60,8 +64,15 @@ class XrayConfigManager:
         return set()
 
     async def add_user(self, inbound_tag: str, user_uuid: str, email: str = "", flow: str = "") -> bool:
-        """Add a user to an inbound by updating config file"""
+        """
+        Add a user to an inbound by updating config file and reloading immediately.
+
+        This causes ~1-2s downtime but is better than batched reloads every 3 minutes.
+        """
         try:
+            email = email or user_uuid
+            flow = flow or "xtls-rprx-vision"
+
             config = await self.read_config()
             inbounds = config.get('inbounds', [])
 
@@ -79,16 +90,21 @@ class XrayConfigManager:
 
                     new_client = {
                         "id": user_uuid,
-                        "email": email or user_uuid,
+                        "email": email,
                         "level": 0,
-                        "flow": "xtls-rprx-vision"
+                        "flow": flow
                     }
                     clients.append(new_client)
 
+                    # Write config and reload immediately
                     if await self.write_config(config):
-                        self.config_needs_reload = True  # Mark config as needing reload
-                        logger.info(f"✓ Added user {email or user_uuid} to config (reload pending)")
-                        return True
+                        logger.info(f"✓ Added user {email} to config, reloading Xray...")
+                        if await self.reload_xray():
+                            logger.info("✓ Xray reloaded successfully")
+                            return True
+                        else:
+                            logger.error("Failed to reload Xray after adding user")
+                            return False
                     else:
                         logger.error(f"Failed to write config when adding user {user_uuid}")
                         return False
@@ -101,7 +117,11 @@ class XrayConfigManager:
             return False
 
     async def remove_user(self, inbound_tag: str, user_uuid: str) -> bool:
-        """Remove a user from an inbound by updating config file"""
+        """
+        Remove a user from an inbound by updating config file and reloading immediately.
+
+        This causes ~1-2s downtime but is better than batched reloads every 3 minutes.
+        """
         try:
             config = await self.read_config()
             inbounds = config.get('inbounds', [])
@@ -125,10 +145,15 @@ class XrayConfigManager:
                     ]
 
                     if len(inbound['settings']['clients']) < original_count:
+                        # Write config and reload immediately
                         if await self.write_config(config):
-                            self.config_needs_reload = True  # Mark config as needing reload
-                            logger.info(f"✓ Removed user {user_email} from config (reload pending)")
-                            return True
+                            logger.info(f"✓ Removed user {user_email} from config, reloading Xray...")
+                            if await self.reload_xray():
+                                logger.info("✓ Xray reloaded successfully")
+                                return True
+                            else:
+                                logger.error("Failed to reload Xray after removing user")
+                                return False
                         else:
                             logger.error(f"Failed to write config when removing user {user_uuid}")
                             return False
@@ -298,11 +323,16 @@ class XrayConfigManager:
                     stream_settings['realitySettings'] = reality_settings
                     inbound['streamSettings'] = stream_settings
 
-                    # Write config
+                    # Write config and reload immediately (SNI change requires restart)
                     if await self.write_config(config):
-                        self.config_needs_reload = True
-                        logger.info(f"✓ Updated SNI from '{current_sni}' to '{new_sni}' (reload pending)")
-                        return True
+                        logger.info(f"✓ Updated SNI from '{current_sni}' to '{new_sni}', reloading Xray...")
+                        # SNI change requires Xray restart - do it immediately
+                        if await self.reload_xray():
+                            logger.info("✓ Xray reloaded successfully with new SNI")
+                            return True
+                        else:
+                            logger.error("Failed to reload Xray after SNI update")
+                            return False
                     else:
                         logger.error("Failed to write config when updating SNI")
                         return False
@@ -434,7 +464,7 @@ class NodeAgent:
             asyncio.create_task(self.health_check_loop()),
             asyncio.create_task(self.sync_users_loop()),
             asyncio.create_task(self.sync_sni_loop()),
-            asyncio.create_task(self.reload_xray_loop()),
+            # reload_xray_loop removed - no longer needed with gRPC API for user management
         ]
 
         try:
@@ -728,27 +758,6 @@ class NodeAgent:
 
         except Exception as e:
             logger.error(f"Error syncing SNI: {e}")
-
-    async def reload_xray_loop(self):
-        """Periodically reload Xray if config changed (every 3 minutes)"""
-        reload_interval = 180  # 3 minutes = 180 seconds
-        logger.info(f"Starting Xray reload loop (interval: {reload_interval}s)")
-
-        # Wait a bit before first check
-        await asyncio.sleep(reload_interval)
-
-        while True:
-            try:
-                if self.xray_config.config_needs_reload:
-                    logger.info("Config changes detected, reloading Xray...")
-                    await self.xray_config.reload_xray()
-                else:
-                    logger.debug("No config changes, skipping reload")
-
-                await asyncio.sleep(reload_interval)
-            except Exception as e:
-                logger.error(f"Error in reload loop: {e}")
-                await asyncio.sleep(reload_interval)
 
 
 async def main():
