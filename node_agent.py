@@ -419,7 +419,7 @@ class NodeAgent:
         self.api_key = os.getenv('NODE_API_KEY')
         self.sync_interval = int(os.getenv('SYNC_INTERVAL', '30'))  # seconds
         self.health_check_interval = int(os.getenv('HEALTH_CHECK_INTERVAL', '60'))
-        self.user_sync_interval = int(os.getenv('USER_SYNC_INTERVAL', '60'))  # seconds
+        self.user_sync_interval = int(os.getenv('USER_SYNC_INTERVAL', '5'))  # seconds - fast sync for instant user activation
         self.inbound_tag = os.getenv('INBOUND_TAG', 'vless-in')  # Xray inbound tag
         self.active_users_window = 300  # 5 minutes in seconds
 
@@ -634,8 +634,8 @@ class NodeAgent:
         """Periodically sync users from main server to Xray"""
         logger.info(f"Starting user sync loop (interval: {self.user_sync_interval}s)")
 
-        # Initial sync immediately
-        await asyncio.sleep(5)  # Wait for registration to complete
+        # Initial sync after short delay
+        await asyncio.sleep(2)  # Wait for registration to complete
 
         while True:
             try:
@@ -701,9 +701,9 @@ class NodeAgent:
                 ):
                     removed_count += 1
 
-            # Log results (reload will happen in periodic reload loop)
+            # Log results
             if added_count > 0 or removed_count > 0:
-                logger.info(f"✓ User sync complete: added {added_count}, removed {removed_count}, total {len(current_uuids) + added_count - removed_count} (reload scheduled)")
+                logger.info(f"✓ User sync complete: added {added_count}, removed {removed_count}, total {len(current_uuids) + added_count - removed_count}")
             else:
                 logger.debug(f"User sync: no changes (total users: {len(current_uuids)})")
 
