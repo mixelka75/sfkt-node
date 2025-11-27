@@ -68,26 +68,29 @@ class XrayConfigManager:
 
         return set()
 
-    async def add_user(self, inbound_tag: str, user_uuid: str, email: str = "", flow: str = "") -> bool:
+    async def add_user(self, inbound_tag: str, user_uuid: str, email: str = "") -> bool:
         """
         Add user with zero-downtime via gRPC API + persist to config file.
 
         Uses xtlsapi library for direct gRPC calls to Xray (like Marzban does).
         First adds to runtime for immediate activation, then persists to config.
+
+        NOTE: With XHTTP transport, flow parameter is NOT used. It was required
+        only for TCP+Vision transport which is now blocked by RKN (Nov 2025).
         """
         try:
             email = email or user_uuid
-            flow = flow or "xtls-rprx-vision"
 
             # STEP 1: Add to runtime via gRPC (zero-downtime)
+            # NOTE: For XHTTP transport, flow should NOT be set
             try:
-                # add_client(inbound_tag, uuid, user_email, protocol, flow=...)
+                # add_client(inbound_tag, uuid, user_email, protocol)
+                # No flow parameter for XHTTP!
                 user = self.xray_client.add_client(
                     inbound_tag,
                     user_uuid,
                     email,
-                    'vless',
-                    flow=flow
+                    'vless'
                 )
                 if not user:
                     logger.error(f"Failed to add user {email} via gRPC")
@@ -109,12 +112,11 @@ class XrayConfigManager:
                         logger.info(f"✓ Added user {email} to runtime (already in config)")
                         return True
 
-                    # Add to config
+                    # Add to config (no flow for XHTTP transport)
                     clients.append({
                         "id": user_uuid,
                         "email": email,
-                        "level": 0,
-                        "flow": flow
+                        "level": 0
                     })
 
                     if await self.write_config(config):
@@ -236,9 +238,9 @@ class XrayConfigManager:
         """
         Validate Xray configuration and fix common issues.
 
-        Checks:
-        1. All VLESS clients have "flow" parameter set to "xtls-rprx-vision"
-        2. Adds missing flow parameters to existing clients
+        For XHTTP transport (post-RKN blocking Nov 2025):
+        - REMOVES any 'flow' parameters from clients (XHTTP doesn't use flow)
+        - Ensures network is set to 'xhttp'
 
         Returns:
             True if config was modified and fixed, False if no changes needed
@@ -255,25 +257,22 @@ class XrayConfigManager:
                     continue
 
                 inbound_tag = inbound.get('tag', 'unknown')
+                stream_settings = inbound.get('streamSettings', {})
+                network = stream_settings.get('network', 'tcp')
                 clients = inbound.get('settings', {}).get('clients', [])
 
-                for client in clients:
-                    client_id = client.get('id', 'unknown')
-                    client_email = client.get('email', client_id)
+                # For XHTTP transport - remove flow parameter from all clients
+                if network == 'xhttp':
+                    for client in clients:
+                        client_id = client.get('id', 'unknown')
+                        client_email = client.get('email', client_id)
 
-                    # Check if flow parameter is missing or incorrect
-                    current_flow = client.get('flow')
-
-                    if current_flow != 'xtls-rprx-vision':
-                        # Fix: add or update flow parameter
-                        client['flow'] = 'xtls-rprx-vision'
-                        config_modified = True
-                        fixed_clients.append(f"{client_email} ({client_id[:8]}...)")
-
-                        if current_flow is None:
-                            logger.warning(f"⚠ Fixed missing 'flow' parameter for user {client_email} in {inbound_tag}")
-                        else:
-                            logger.warning(f"⚠ Fixed incorrect 'flow' parameter for user {client_email} in {inbound_tag}: '{current_flow}' -> 'xtls-rprx-vision'")
+                        # Remove flow parameter if present (XHTTP doesn't use it)
+                        if 'flow' in client:
+                            del client['flow']
+                            config_modified = True
+                            fixed_clients.append(f"{client_email} ({client_id[:8]}...) - removed flow")
+                            logger.info(f"✓ Removed 'flow' parameter from user {client_email} in {inbound_tag} (not needed for XHTTP)")
 
             # Write config if modified
             if config_modified:
