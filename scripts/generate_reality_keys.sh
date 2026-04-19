@@ -38,8 +38,10 @@ generate_keys
 
 # X25519 public/private keys are base64url, length 43 (unpadded) or 44 (padded with '=').
 # grep -oE captures only the token on the key/password line.
-PRIVATE_KEY=$(grep -iE "^(privatekey|private key)[[:space:]]*:" "$TEMP_FILE" | grep -oE '[A-Za-z0-9_=-]{43,44}' | head -1)
-PUBLIC_KEY=$(grep -iE "^(password|publickey|public key)[[:space:]]*:" "$TEMP_FILE" | grep -oE '[A-Za-z0-9_=-]{43,44}' | head -1)
+# Xray v25.10+ uses "Password (PublicKey):" with a parenthesised suffix, so we
+# allow any non-colon chars between the key name and the colon.
+PRIVATE_KEY=$(grep -iE "^(privatekey|private key)[^:]*:" "$TEMP_FILE" | grep -oE '[A-Za-z0-9_=-]{43,44}' | head -1)
+PUBLIC_KEY=$(grep -iE "^(password|publickey|public key)[^:]*:" "$TEMP_FILE" | grep -oE '[A-Za-z0-9_=-]{43,44}' | head -1)
 
 # Short ID: 8 random bytes (16 hex chars). Acceptable shortId lengths in Xray are 0..16 hex chars.
 SHORT_ID=$(openssl rand -hex 8)
