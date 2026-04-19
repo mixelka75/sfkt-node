@@ -14,7 +14,7 @@ fi
 # Pin a known-good Xray release. XHTTP still evolves on main, so pinning avoids
 # breaking changes between deploys. Override with XRAY_VERSION=vX.Y.Z.
 # Known good for stream-one + REALITY as of 2026-04.
-XRAY_VERSION="${XRAY_VERSION:-v25.3.6}"
+XRAY_VERSION="${XRAY_VERSION:-v25.10.15}"
 
 echo "Installing Xray-core (${XRAY_VERSION})..."
 # --version pins the release; falls back to latest if the script does not
