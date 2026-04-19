@@ -8,6 +8,7 @@ import json
 import os
 import tempfile
 import subprocess
+import time
 import psutil
 import logging
 from datetime import datetime
@@ -432,6 +433,11 @@ class NodeAgent:
         self.user_sync_interval = int(os.getenv('USER_SYNC_INTERVAL', '5'))  # seconds - fast sync for instant user activation
         self.inbound_tag = os.getenv('INBOUND_TAG', 'vless-in')  # Xray inbound tag
         self.active_users_window = 300  # 5 minutes in seconds
+        # Phase 3 — live log streaming (admin panel WebSocket)
+        self._log_stream_tasks: Dict[str, asyncio.Task] = {}
+        self._log_stream_expires: Dict[str, float] = {}
+        self._started_at: float = time.time()
+        self._xray_version_cache: Optional[tuple] = None
 
         # Xray managers
         self.xray_stats = XrayStatsClient()
@@ -619,13 +625,20 @@ class NodeAgent:
             if (current_time - last_activity) <= self.active_users_window
         )
 
+        xray_version = await self._get_xray_version_cached()
+        config_hash = await self._compute_config_hash()
+        uptime_s = int(time.time() - self._started_at) if hasattr(self, "_started_at") else None
+
         payload = {
             'node_id': self.node_id,
             'timestamp': datetime.utcnow().isoformat(),
             'cpu_usage': cpu_percent,
             'memory_usage': memory.percent,
             'active_connections': active_connections,
-            'is_healthy': True
+            'is_healthy': True,
+            'xray_version': xray_version,
+            'config_hash': config_hash,
+            'uptime_s': uptime_s,
         }
 
         try:
@@ -634,11 +647,161 @@ class NodeAgent:
                 json=payload
             ) as resp:
                 if resp.status == 200:
+                    data = await resp.json()
                     logger.debug("✓ Health check sent successfully")
+                    # Phase 3 — drain any queued admin commands
+                    for cmd in data.get('commands', []) or []:
+                        await self._handle_command(cmd)
                 else:
                     logger.warning(f"Failed to send health check: {resp.status}")
         except Exception as e:
             logger.error(f"Error sending health check: {e}")
+
+    # ------------------------------------------------------------------
+    # Phase 3/4/5 helpers: xray version, config hash, command dispatch,
+    # live-log streaming to admin panel.
+    # ------------------------------------------------------------------
+
+    async def _get_xray_version_cached(self) -> Optional[str]:
+        """Cache xray version for 1 hour — it only changes on upgrade."""
+        now = time.time()
+        cached = getattr(self, "_xray_version_cache", None)
+        if cached and (now - cached[1]) < 3600:
+            return cached[0]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "/usr/local/bin/xray", "version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, _ = await proc.communicate()
+            ver = (out.decode(errors="ignore").splitlines() or [""])[0].strip()
+        except Exception as e:
+            logger.warning(f"xray version failed: {e}")
+            ver = None
+        self._xray_version_cache = (ver, now)
+        return ver
+
+    async def _compute_config_hash(self) -> Optional[str]:
+        """
+        Compute SHA-256 over the admin-controllable subset of the live Xray
+        config so the panel can detect hand-edits. Fields mirror
+        backend/app/services/node_ops_service.expected_config_hash.
+        """
+        import hashlib
+        try:
+            config = await self.xray_config.read_config()
+            for ib in config.get("inbounds", []):
+                if ib.get("tag") == self.inbound_tag:
+                    ss = ib.get("streamSettings", {})
+                    rs = ss.get("realitySettings", {})
+                    xs = ss.get("xhttpSettings", {})
+                    sni = (rs.get("serverNames") or [""])[0]
+                    pub = os.getenv("REALITY_PUBLIC_KEY", "") or ""
+                    sid = (rs.get("shortIds") or [""])[0]
+                    path = xs.get("path", "/sfkt")
+                    blob = f"{sni}|{pub}|{sid}|{path}"
+                    return hashlib.sha256(blob.encode()).hexdigest()
+        except Exception as e:
+            logger.warning(f"config_hash failed: {e}")
+        return None
+
+    async def _handle_command(self, cmd: Dict) -> None:
+        """Dispatch an admin command received via /health response."""
+        action = (cmd or {}).get("action")
+        if action == "start_log_stream":
+            stream = cmd.get("stream")
+            duration = int(cmd.get("duration_s", 300))
+            if stream not in ("xray", "agent"):
+                logger.warning(f"unknown log stream: {stream}")
+                return
+            existing = self._log_stream_tasks.get(stream)
+            if existing and not existing.done():
+                # Renew — let the running one see the new expiry via shared state
+                self._log_stream_expires[stream] = time.time() + duration
+                logger.info(f"log stream {stream} renewed to +{duration}s")
+                return
+            self._log_stream_expires[stream] = time.time() + duration
+            self._log_stream_tasks[stream] = asyncio.create_task(
+                self._run_log_stream(stream)
+            )
+        else:
+            logger.debug(f"unknown command ignored: {action}")
+
+    async def _run_log_stream(self, stream: str) -> None:
+        """
+        Tail journalctl (xray) or docker compose logs (agent) and POST batches
+        of log lines to /logs/push until the command expires.
+        """
+        if stream == "xray":
+            cmd = ["journalctl", "-u", "xray", "-fn", "0", "--output=short-iso"]
+        else:
+            cmd = ["docker", "compose", "-f", "/opt/sfkt-node/docker-compose.yml",
+                   "logs", "-f", "--tail=0", "--no-color", "node-agent"]
+
+        logger.info(f"starting log stream: {stream}")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except Exception as e:
+            logger.error(f"failed to start {stream} stream: {e}")
+            return
+
+        batch: List[Dict] = []
+        last_flush = time.time()
+
+        async def flush():
+            nonlocal batch, last_flush
+            if not batch:
+                return
+            try:
+                payload = {"stream": stream, "lines": batch[:200]}
+                async with self.session.post(
+                    f"{self.main_server_url}/api/v1/nodes/{self.node_id}/logs/push",
+                    json=payload,
+                ) as resp:
+                    if resp.status >= 400:
+                        logger.debug(f"log push {stream} -> {resp.status}")
+            except Exception as e:
+                logger.debug(f"log push error: {e}")
+            batch = []
+            last_flush = time.time()
+
+        try:
+            while True:
+                if time.time() >= self._log_stream_expires.get(stream, 0):
+                    logger.info(f"log stream {stream} expired")
+                    break
+                try:
+                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    # Heartbeat flush every second even without lines
+                    if (time.time() - last_flush) > 1.0:
+                        await flush()
+                    continue
+                if not line:
+                    await asyncio.sleep(0.5)
+                    continue
+                text = line.decode(errors="ignore").rstrip()
+                if not text:
+                    continue
+                batch.append({"ts": None, "msg": text})
+                if len(batch) >= 20 or (time.time() - last_flush) >= 1.0:
+                    await flush()
+        finally:
+            await flush()
+            try:
+                proc.terminate()
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            logger.info(f"log stream {stream} stopped")
 
     async def sync_users_loop(self):
         """Periodically sync users from main server to Xray"""
