@@ -64,6 +64,36 @@ load_env() {
     success "Loaded environment variables from .env"
 }
 
+# Pre-flight check: verify that NODE_SNI is reachable via TLS 1.3
+# REALITY requires the dest to support TLS 1.3 + X25519, otherwise Xray will
+# refuse to start.
+preflight_sni() {
+    local sni="${NODE_SNI:-max.ru}"
+    local port="${SNI_PORT:-443}"
+
+    info "Pre-flight: probing ${sni}:${port} for TLS 1.3..."
+
+    if ! command -v curl &> /dev/null; then
+        warning "curl not installed, skipping pre-flight probe"
+        return 0
+    fi
+
+    # Try TLS 1.3 first. --tls-max 1.3 forces the minimum,
+    # --tlsv1.3 enforces it as minimum too. We only care that handshake
+    # succeeds and returns any HTTP response.
+    local http_code
+    http_code=$(curl -sk --max-time 8 --tlsv1.3 -o /dev/null -w "%{http_code}" "https://${sni}:${port}/" 2>/dev/null || echo "000")
+
+    if [ "$http_code" = "000" ]; then
+        warning "${sni}:${port} did not respond over TLS 1.3 from this host."
+        warning "REALITY may fail to start. Consider changing NODE_SNI in .env to a"
+        warning "domain that is reachable AND supports TLS 1.3 + X25519 from your VPS"
+        warning "(e.g. www.yahoo.com, www.cloudflare.com, www.microsoft.com for non-RU hosts)."
+    else
+        success "${sni} reachable over TLS 1.3 (HTTP $http_code)"
+    fi
+}
+
 # Update Xray configuration with values from .env
 update_config() {
     info "Updating Xray configuration..."
@@ -88,33 +118,46 @@ update_config() {
     cp "$XRAY_TEMPLATE" "$XRAY_CONFIG"
 
     # Replace placeholders with actual values
-    sed -i "s/PRIVATE_KEY_PLACEHOLDER/$REALITY_PRIVATE_KEY/g" "$XRAY_CONFIG"
-    sed -i "s/SHORT_ID_PLACEHOLDER/$REALITY_SHORT_ID/g" "$XRAY_CONFIG"
+    sed -i "s|PRIVATE_KEY_PLACEHOLDER|$REALITY_PRIVATE_KEY|g" "$XRAY_CONFIG"
+    sed -i "s|SHORT_ID_PLACEHOLDER|$REALITY_SHORT_ID|g" "$XRAY_CONFIG"
 
-    # Update SNI if specified - use jq for proper JSON manipulation
+    # Update SNI — must be a single eTLD+1. dest and serverNames MUST share the
+    # same root; mixing unrelated domains breaks REALITY.
     if [ -n "$NODE_SNI" ]; then
-        # Extract base domain and www variant for serverNames
-        BASE_SNI="$NODE_SNI"
-
-        # Use jq to update both dest and serverNames
-        TEMP_CONFIG=$(mktemp)
-        jq --arg sni "$BASE_SNI" \
+        local temp_config
+        temp_config=$(mktemp)
+        jq --arg sni "$NODE_SNI" \
            '.inbounds[0].streamSettings.realitySettings.dest = ($sni + ":443") |
             .inbounds[0].streamSettings.realitySettings.serverNames = [$sni, ("www." + $sni)]' \
-           "$XRAY_CONFIG" > "$TEMP_CONFIG"
-
-        # Replace original config with updated one
-        mv "$TEMP_CONFIG" "$XRAY_CONFIG"
+           "$XRAY_CONFIG" > "$temp_config"
+        mv "$temp_config" "$XRAY_CONFIG"
         success "Updated SNI to $NODE_SNI (dest and serverNames)"
     fi
 
+    # Update XHTTP path / mode / host from env (defaults preserved in template)
+    local xhttp_path="${XHTTP_PATH:-/sfkt}"
+    local xhttp_mode="${XRAY_MODE:-stream-one}"
+    local xhttp_host="${XHTTP_HOST:-}"
+
+    local temp_config
+    temp_config=$(mktemp)
+    jq --arg path "$xhttp_path" \
+       --arg mode "$xhttp_mode" \
+       --arg host "$xhttp_host" \
+       '.inbounds[0].streamSettings.xhttpSettings.path = $path |
+        .inbounds[0].streamSettings.xhttpSettings.mode = $mode |
+        .inbounds[0].streamSettings.xhttpSettings.host = $host' \
+       "$XRAY_CONFIG" > "$temp_config"
+    mv "$temp_config" "$XRAY_CONFIG"
+    success "Updated XHTTP: path=$xhttp_path, mode=$xhttp_mode, host='$xhttp_host'"
+
     # Update port if specified
     if [ -n "$NODE_PORT" ] && [ "$NODE_PORT" != "443" ]; then
-        TEMP_CONFIG=$(mktemp)
+        temp_config=$(mktemp)
         jq --arg port "$NODE_PORT" \
            '.inbounds[0].port = ($port | tonumber)' \
-           "$XRAY_CONFIG" > "$TEMP_CONFIG"
-        mv "$TEMP_CONFIG" "$XRAY_CONFIG"
+           "$XRAY_CONFIG" > "$temp_config"
+        mv "$temp_config" "$XRAY_CONFIG"
         success "Updated port to $NODE_PORT"
     fi
 
@@ -126,6 +169,8 @@ validate_config() {
     info "Validating Xray configuration..."
 
     if ! xray run -test -config "$XRAY_CONFIG" > /dev/null 2>&1; then
+        info "Validation output:"
+        xray run -test -config "$XRAY_CONFIG" 2>&1 | tail -20 || true
         error "Configuration validation failed! Run: xray run -test -config $XRAY_CONFIG"
     fi
 
@@ -150,8 +195,24 @@ reload_xray() {
     if systemctl is-active --quiet xray; then
         success "Xray service is running"
     else
+        info "Last 30 journal lines:"
+        journalctl -u xray -n 30 --no-pager 2>&1 || true
         error "Xray service failed to start. Check: journalctl -u xray -n 50"
     fi
+
+    # Ensure Xray actually listens on the configured port
+    local port="${NODE_PORT:-443}"
+    local attempts=0
+    while [ $attempts -lt 10 ]; do
+        if ss -tulpn 2>/dev/null | grep -q ":${port}.*xray"; then
+            success "Xray listening on port ${port}"
+            return 0
+        fi
+        attempts=$((attempts + 1))
+        sleep 1
+    done
+    warning "Xray did not start listening on ${port} within 10s"
+    journalctl -u xray -n 20 --no-pager 2>&1 || true
 }
 
 # Show current configuration status
@@ -188,8 +249,10 @@ show_status() {
         echo "  REALITY_PRIVATE_KEY: ${REALITY_PRIVATE_KEY:0:20}..."
         echo "  REALITY_PUBLIC_KEY: ${REALITY_PUBLIC_KEY:-not set}"
         echo "  REALITY_SHORT_ID: ${REALITY_SHORT_ID:-not set}"
-        echo "  NODE_SNI: ${NODE_SNI:-vk.com}"
+        echo "  NODE_SNI: ${NODE_SNI:-max.ru}"
         echo "  NODE_PORT: ${NODE_PORT:-443}"
+        echo "  XHTTP_PATH: ${XHTTP_PATH:-/sfkt}"
+        echo "  XRAY_MODE: ${XRAY_MODE:-stream-one}"
     else
         warning ".env file not found"
     fi
@@ -269,7 +332,8 @@ Commands:
     show            Show current configuration (JSON)
     reset           Reset config to template (backup current)
     upgrade         Update Xray binary to latest version
-    apply           Update config, validate, and reload (recommended)
+    preflight       Probe NODE_SNI:443 for TLS 1.3 reachability
+    apply           Preflight, update config, validate, and reload (recommended)
     help            Show this help message
 
 Examples:
@@ -289,8 +353,11 @@ Environment variables (in .env file):
     REALITY_PRIVATE_KEY     Private key for REALITY protocol
     REALITY_PUBLIC_KEY      Public key (for clients)
     REALITY_SHORT_ID        Short ID for REALITY
-    NODE_SNI                SNI for masquerading (default: vk.com)
+    NODE_SNI                SNI for masquerading (default: max.ru)
     NODE_PORT               Port for Xray (default: 443)
+    XHTTP_PATH              XHTTP path (default: /sfkt)
+    XRAY_MODE               XHTTP mode (default: stream-one)
+    XHTTP_HOST              XHTTP Host header (default: empty)
 
 EOF
 }
@@ -328,9 +395,14 @@ main() {
             check_root
             update_xray
             ;;
+        preflight)
+            load_env
+            preflight_sni
+            ;;
         apply)
             check_root
             load_env
+            preflight_sni
             update_config
             validate_config
             reload_xray

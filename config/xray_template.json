@@ -28,7 +28,7 @@
       "statsInboundUplink": true,
       "statsInboundDownlink": true,
       "statsOutboundUplink": true,
-      "statsOutboundDownload": true
+      "statsOutboundDownlink": true
     }
   },
   "inbounds": [
@@ -39,7 +39,6 @@
       "tag": "vless-in",
       "settings": {
         "clients": [],
-        "_comment": "Client format: {\"id\": \"uuid\", \"email\": \"email\", \"level\": 0}. NOTE: flow is NOT used with XHTTP transport!",
         "decryption": "none"
       },
       "streamSettings": {
@@ -59,8 +58,9 @@
           ]
         },
         "xhttpSettings": {
-          "mode": "auto",
-          "path": "/sfkt"
+          "mode": "stream-one",
+          "path": "/sfkt",
+          "host": ""
         }
       },
       "sniffing": {
@@ -69,7 +69,8 @@
           "http",
           "tls",
           "quic"
-        ]
+        ],
+        "routeOnly": true
       }
     },
     {

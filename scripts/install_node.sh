@@ -195,9 +195,23 @@ if [ -z "$NODE_CITY" ]; then
     error "City is required"
 fi
 
-# SNI
-read -p "SNI for masquerading [max.ru]: " NODE_SNI
-NODE_SNI=${NODE_SNI:-max.ru}
+# SNI — must be reachable over TLS 1.3 + X25519 from THIS host.
+# Pick a local-country domain for best stealth (see sfkt README).
+case "$NODE_COUNTRY_CODE" in
+    RU) DEFAULT_SNI="max.ru" ;;
+    NL) DEFAULT_SNI="nltimes.nl" ;;
+    DE) DEFAULT_SNI="spiegel.de" ;;
+    FR) DEFAULT_SNI="www.lemonde.fr" ;;
+    GB|UK) DEFAULT_SNI="www.bbc.co.uk" ;;
+    US|CA) DEFAULT_SNI="www.yahoo.com" ;;
+    JP) DEFAULT_SNI="www.yahoo.co.jp" ;;
+    SE) DEFAULT_SNI="www.svt.se" ;;
+    FI) DEFAULT_SNI="yle.fi" ;;
+    TR) DEFAULT_SNI="www.hurriyet.com.tr" ;;
+    *)  DEFAULT_SNI="www.yahoo.com" ;;
+esac
+read -p "SNI for masquerading [$DEFAULT_SNI]: " NODE_SNI
+NODE_SNI=${NODE_SNI:-$DEFAULT_SNI}
 
 # Main server URL
 read -p "Main server URL [https://sfkt.mxl.wtf]: " MAIN_SERVER_URL
@@ -254,12 +268,24 @@ NODE_API_KEY=$NODE_API_KEY
 # ========================================
 SYNC_INTERVAL=30
 HEALTH_CHECK_INTERVAL=60
-USER_SYNC_INTERVAL=60
+USER_SYNC_INTERVAL=5
 
 # ========================================
 # Xray Configuration
 # ========================================
 INBOUND_TAG=vless-in
+
+# ========================================
+# XHTTP Transport (VLESS + XHTTP + REALITY)
+# ========================================
+# Path must match what the main server distributes to clients.
+XHTTP_PATH=/sfkt
+# Mode: stream-one is strongly recommended for REALITY direct (no CDN).
+# packet-up is only useful behind CDN. "auto" has known bugs with REALITY
+# (see XTLS/Xray-core issue #5635).
+XRAY_MODE=stream-one
+# Optional Host header override. Leave empty unless fronted.
+XHTTP_HOST=
 EOF
 
 success ".env file created"
